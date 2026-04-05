@@ -17,6 +17,61 @@ fn extract_ip(headers: &axum::http::HeaderMap) -> String {
         .to_string()
 }
 
+/// Helper: extract multipart fields for user update
+async fn parse_multipart_update(
+    mut multipart: axum::extract::Multipart,
+    storage: &aws_sdk_s3::Client,
+) -> Result<UpdateUserRequest, AppError> {
+    let mut name = None;
+    let mut phone = None;
+    let mut address = None;
+    let mut photo_url = None;
+    let mut lat = None;
+    let mut lng = None;
+    let mut payment_token = None;
+    let mut photo_bytes = None;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(format!("Multipart field error: {}", e)))? {
+        let field_name = field.name().unwrap_or("").to_string();
+        match field_name.as_str() {
+            "name" => name = field.text().await.ok().filter(|s| !s.is_empty()),
+            "phone" => phone = field.text().await.ok().filter(|s| !s.is_empty()),
+            "address" => address = field.text().await.ok().filter(|s| !s.is_empty()),
+            "lat" => lat = field.text().await.ok().and_then(|s| s.parse::<f64>().ok()),
+            "lng" => lng = field.text().await.ok().and_then(|s| s.parse::<f64>().ok()),
+            "payment_token" => payment_token = field.text().await.ok().filter(|s| !s.is_empty()),
+            "photo" => {
+                if let Ok(data) = field.bytes().await {
+                    if !data.is_empty() {
+                        photo_bytes = Some(data.to_vec());
+                    }
+                }
+            }
+            _ => {} // ignore unknown fields
+        }
+    }
+
+    if let Some(bytes) = photo_bytes {
+        photo_url = match crate::services::storage_service::StorageService::process_and_upload_image(storage, &bytes).await {
+            Ok(url) => Some(url),
+            Err(e) => {
+                tracing::error!("NON-CRITICAL: Photo upload failed during user update: {}. Proceeding without changing photo.", e);
+                None
+            }
+        };
+    }
+
+    Ok(UpdateUserRequest {
+        name,
+        phone,
+        address,
+        photo: photo_url,
+        lat,
+        lng,
+        payment_token,
+    })
+}
+
 #[utoipa::path(
     get,
     path = "/api/users/me",
@@ -46,7 +101,7 @@ pub async fn get_me(
 #[utoipa::path(
     put,
     path = "/api/users/me",
-    request_body = UpdateUserRequest,
+    request_body(content = UpdateUserRequest, description = "Update current user profile. Use multipart/form-data for optional photo upload.", content_type = "multipart/form-data"),
     responses(
         (status = 200, description = "Profile updated successfully", body = UserProfileResponse),
         (status = 401, description = "Unauthorized")
@@ -57,15 +112,16 @@ pub async fn update_me(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     user_ctx: UserContext,
-    Json(req): Json<UpdateUserRequest>,
+    multipart: axum::extract::Multipart,
 ) -> Result<Json<UserProfileResponse>, AppError> {
     let ip = extract_ip(&headers);
+    let req = parse_multipart_update(multipart, &state.storage).await?;
     let res = UserService::update_profile(&state.db, user_ctx.user_id, req).await?;
 
     let _ = AuditService::log(
         &state.db, Some(user_ctx.user_id),
         "USER_PROFILE_UPDATED", "PUT", "/api/users/me", 200, &ip,
-        Some(serde_json::json!({"updated_fields": "name/phone/address"})),
+        Some(serde_json::json!({"updated_fields": "multipart/form-data"})),
     ).await;
 
     Ok(Json(res))
@@ -258,7 +314,7 @@ pub async fn delete_user(
 #[utoipa::path(
     put,
     path = "/api/users/{id}",
-    request_body = UpdateUserRequest,
+    request_body(content = UpdateUserRequest, description = "Update user profile by admin. Use multipart/form-data for optional photo upload.", content_type = "multipart/form-data"),
     responses(
         (status = 200, description = "User updated successfully by admin", body = UserProfileResponse),
         (status = 400, description = "Bad request"),
@@ -275,9 +331,10 @@ pub async fn update_user(
     headers: axum::http::HeaderMap,
     user_ctx: UserContext,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
-    Json(req): Json<UpdateUserRequest>,
+    multipart: axum::extract::Multipart,
 ) -> Result<Json<UserProfileResponse>, AppError> {
     let ip = extract_ip(&headers);
+    let req = parse_multipart_update(multipart, &state.storage).await?;
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -298,3 +355,4 @@ pub async fn update_user(
 
     Ok(Json(res))
 }
+

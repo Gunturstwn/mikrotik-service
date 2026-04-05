@@ -31,9 +31,10 @@ pub struct UpdateUserRequest {
     #[schema(example = "Jl. Baru No. 456", nullable = true)]
     pub address: Option<String>,
 
-    /// URL foto profil (opsional, gunakan endpoint /api/users/me/photo untuk upload file)
-    #[schema(example = "https://example.com/new-photo.jpg", nullable = true)]
+    /// File foto profil (opsional, gunakan format multipart/form-data)
+    #[schema(value_type = Option<String>, format = Binary, nullable = true)]
     pub photo: Option<String>,
+
 
     /// Latitude koordinat (opsional)
     #[schema(example = "-6.2088", nullable = true)]

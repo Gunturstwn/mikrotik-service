@@ -21,36 +21,5 @@ pub async fn connect() -> Client {
         .force_path_style(true)
         .build();
 
-    let client = Client::from_conf(s3_config);
-
-    // Ensure mikrotik-images bucket exists
-    let bucket_name = "mikrotik-images";
-    if let Err(e) = client.head_bucket().bucket(bucket_name).send().await {
-        let err_msg = e.to_string();
-        if err_msg.contains("NotFound") || err_msg.contains("404") {
-            tracing::info!("Bucket '{}' not found, creating it...", bucket_name);
-            let _ = client.create_bucket().bucket(bucket_name).send().await;
-            
-            // Allow public read access to images
-            let policy = serde_json::json!({
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Principal": "*",
-                        "Action": ["s3:GetObject"],
-                        "Resource": [format!("arn:aws:s3:::{}/*", bucket_name)]
-                    }
-                ]
-            });
-            
-            let _ = client.put_bucket_policy()
-                .bucket(bucket_name)
-                .policy(policy.to_string())
-                .send()
-                .await;
-        }
-    }
-
-    client
+    Client::from_conf(s3_config)
 }

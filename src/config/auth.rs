@@ -37,11 +37,15 @@ pub fn create_token(user_id: Uuid, roles: Vec<String>) -> Result<String, AppErro
 
 pub fn verify_token(token: &str) -> Result<Claims, AppError> {
     let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.validate_exp = true;
+    
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_ref()),
-        &Validation::default(),
+        &validation,
     )
     .map_err(|e| AppError::Unauthorized(format!("Invalid token: {}", e)))
     .map(|data| data.claims)
 }
+

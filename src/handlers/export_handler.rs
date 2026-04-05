@@ -5,19 +5,11 @@ use crate::middlewares::auth::UserContext;
 use crate::AppState;
 use crate::errors::app_error::AppError;
 use crate::export::{CSVExporter, ExcelExporter};
+use crate::utils::ip::extract_ip_from_headers;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
-/// Helper: extract client IP from headers
-fn extract_ip(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .or_else(|| headers.get("host").and_then(|h| h.to_str().ok()))
-        .unwrap_or("unknown")
-        .to_string()
-}
+
 
 #[utoipa::path(
     get,
@@ -34,7 +26,7 @@ pub async fn export_users_csv(
     req_headers: axum::http::HeaderMap,
     user_ctx: UserContext,
 ) -> Result<impl IntoResponse, AppError> {
-    let ip = extract_ip(&req_headers);
+    let ip = extract_ip_from_headers(&req_headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -56,10 +48,10 @@ pub async fn export_users_csv(
     ).await;
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, "text/csv".parse().unwrap());
+    headers.insert(header::CONTENT_TYPE, "text/csv".parse().map_err(|e| AppError::InternalServerError(format!("Invalid content type: {}", e)))?);
     headers.insert(
         header::CONTENT_DISPOSITION,
-        "attachment; filename=\"users_export.csv\"".parse().unwrap(),
+        "attachment; filename=\"users_export.csv\"".parse().map_err(|e| AppError::InternalServerError(format!("Invalid content disposition: {}", e)))?,
     );
 
     Ok((StatusCode::OK, headers, csv_bytes))
@@ -80,7 +72,7 @@ pub async fn export_users_xlsx(
     req_headers: axum::http::HeaderMap,
     user_ctx: UserContext,
 ) -> Result<impl IntoResponse, AppError> {
-    let ip = extract_ip(&req_headers);
+    let ip = extract_ip_from_headers(&req_headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -106,11 +98,11 @@ pub async fn export_users_xlsx(
         header::CONTENT_TYPE,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             .parse()
-            .unwrap(),
+            .map_err(|e| AppError::InternalServerError(format!("Invalid content type: {}", e)))?,
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        "attachment; filename=\"users_export.xlsx\"".parse().unwrap(),
+        "attachment; filename=\"users_export.xlsx\"".parse().map_err(|e| AppError::InternalServerError(format!("Invalid content disposition: {}", e)))?,
     );
 
     Ok((StatusCode::OK, headers, xlsx_bytes))

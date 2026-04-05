@@ -110,12 +110,12 @@ async fn main() {
         lettre::transport::smtp::SmtpTransport::builder_dangerous(smtp_host).port(smtp_port)
     } else if smtp_port == 465 {
         // Port 465 uses Implicit TLS (SSL)
+        let tls_params = lettre::transport::smtp::client::TlsParameters::new(smtp_host.clone())
+            .expect("Failed to create TLS parameters for SMTP");
         lettre::transport::smtp::SmtpTransport::relay(&smtp_host)
             .expect("Invalid SMTP host")
             .port(smtp_port)
-            .tls(lettre::transport::smtp::client::Tls::Wrapper(
-                lettre::transport::smtp::client::TlsParameters::new(smtp_host.clone()).unwrap(),
-            ))
+            .tls(lettre::transport::smtp::client::Tls::Wrapper(tls_params))
     } else {
         // Port 587 uses STARTTLS
         lettre::transport::smtp::SmtpTransport::relay(&smtp_host)
@@ -153,6 +153,10 @@ async fn main() {
     });
 
     let storage = config::storage::connect().await;
+    let bucket = std::env::var("MINIO_BUCKET").unwrap_or_else(|_| "mikrotik-images".to_string());
+    if let Err(e) = mikrotik_service::services::storage_service::StorageService::ensure_bucket_exists(&storage, &bucket).await {
+        tracing::error!("WARNING: Failed to ensure bucket '{}' exists: {}. Storage operations might fail.", bucket, e);
+    }
     let security = mikrotik_service::services::security_service::SecurityService::new(redis.clone());
     let captcha = mikrotik_service::services::captcha_service::CaptchaService::new();
     let mikrotik_pool = std::sync::Arc::new(mikrotik_service::pool::MikrotikPool::new(30));
@@ -167,12 +171,17 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    let app = routes::create_router(state.clone())
+    let mut app = routes::create_router(state.clone())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             mikrotik_service::middlewares::global_rate_limit_middleware,
-        ))
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+        ));
+
+    // Disable Swagger UI in production for security
+    let is_production = std::env::var("APP_ENV").map(|v| v == "production").unwrap_or(false);
+    if !is_production {
+        app = app.merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+    }
 
     let port = std::env::var("APP_PORT")
         .unwrap_or("5150".to_string())
@@ -180,8 +189,13 @@ async fn main() {
         .unwrap_or(5150);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Server starting at http://{}", addr);
-    info!("Swagger UI at http://{}/swagger-ui", addr);
+    if !is_production {
+        info!("Swagger UI at http://{}/swagger-ui", addr);
+    }
 
-    let listener = TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = TcpListener::bind(addr).await.expect("Failed to bind to address");
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .expect("Server failed to run");
 }
+

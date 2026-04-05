@@ -5,6 +5,7 @@ use axum::{
 };
 use crate::AppState;
 use crate::errors::app_error::AppError;
+use crate::utils::ip::extract_ip;
 
 pub async fn global_rate_limit_middleware(
     State(state): State<AppState>,
@@ -38,13 +39,6 @@ pub async fn login_rate_limit_middleware(
     }
 }
 
-fn extract_ip(req: &Request) -> &str {
-    req.headers()
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim())
-        .or_else(|| req.headers().get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()))
-        .unwrap_or("unknown")
-}
+
+
 

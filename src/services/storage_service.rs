@@ -1,3 +1,5 @@
+use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::primitives::ByteStream;
 use image::ImageFormat;
@@ -9,6 +11,81 @@ use tracing::info;
 pub struct StorageService;
 
 impl StorageService {
+    fn is_not_found(err: &SdkError<HeadBucketError>) -> bool {
+        use aws_sdk_s3::error::ProvideErrorMetadata;
+        match err {
+            SdkError::ServiceError(context) => {
+                matches!(context.err().code(), Some("NoSuchBucket") | Some("NotFound"))
+            }
+            _ => false,
+        }
+    }
+
+    pub async fn ensure_bucket_exists(client: &Client, bucket: &str) -> Result<(), AppError> {
+        let mut retry_count = 0;
+        let max_retries = 5;
+        let mut delay = tokio::time::Duration::from_secs(1);
+
+        while retry_count < max_retries {
+            tracing::info!("Checking if bucket '{}' exists...", bucket);
+            
+            match client.head_bucket().bucket(bucket).send().await {
+                Ok(_) => {
+                    tracing::info!("Bucket '{}' exists and is accessible.", bucket);
+                    return Ok(());
+                }
+                Err(e) => {
+                    if Self::is_not_found(&e) {
+                        tracing::warn!("Bucket '{}' not found. Creating...", bucket);
+                        
+                        match client.create_bucket().bucket(bucket).send().await {
+                            Ok(_) => {
+                                tracing::info!("Bucket '{}' created successfully.", bucket);
+                                
+                                // Apply public read access to images
+                                let policy = serde_json::json!({
+                                    "Version": "2012-10-17",
+                                    "Statement": [
+                                        {
+                                            "Effect": "Allow",
+                                            "Principal": "*",
+                                            "Action": ["s3:GetObject"],
+                                            "Resource": [format!("arn:aws:s3:::{}/*", bucket)]
+                                        }
+                                    ]
+                                });
+
+                                if let Err(pe) = client.put_bucket_policy()
+                                    .bucket(bucket)
+                                    .policy(policy.to_string())
+                                    .send()
+                                    .await {
+                                        tracing::error!("Failed to apply public policy to bucket '{}': {:?}", bucket, pe);
+                                    } else {
+                                        tracing::info!("Public read policy applied to bucket '{}'.", bucket);
+                                    }
+                                
+                                return Ok(());
+                            }
+                            Err(ce) => {
+                                tracing::error!("Failed to create bucket '{}' after 404: {:?}.", bucket, ce);
+                                return Err(AppError::StorageError(format!("Critical failure creating bucket '{}'", bucket)));
+                            }
+                        }
+                    } else {
+                        tracing::error!("Transient error checking bucket '{}': {:?}. Retrying in {:?}...", bucket, e, delay);
+                    }
+                }
+            }
+
+            tokio::time::sleep(delay).await;
+            retry_count += 1;
+            delay *= 2; // Exponential backoff for transient errors
+        }
+
+        Err(AppError::StorageError(format!("Failed to ensure bucket '{}' exists after {} attempts", bucket, max_retries)))
+    }
+
     pub async fn process_and_upload_image(
         client: &Client,
         original_bytes: &[u8],
@@ -42,24 +119,27 @@ impl StorageService {
         // 5. Upload to S3/MinIO
         let unique_id = Uuid::new_v4();
         let file_name = format!("{}.webp", unique_id);
-        let bucket_name = "mikrotik-images";
+        let bucket_name = std::env::var("MINIO_BUCKET").unwrap_or_else(|_| "mikrotik-images".to_string());
 
         let byte_stream = ByteStream::from(compressed_bytes);
         
-        client.put_object()
-            .bucket(bucket_name)
+        if let Err(e) = client.put_object()
+            .bucket(&bucket_name)
             .key(&file_name)
             .body(byte_stream)
             .content_type("image/webp")
             .send()
-            .await
-            .map_err(|e| AppError::StorageError(format!("Failed to upload to storage: {}", e)))?;
+            .await {
+                tracing::error!("FATAL: Storage service error during upload to bucket '{}': {:?}", bucket_name, e);
+                return Err(AppError::StorageError(format!("Failed to upload to storage: service error. Check internal logs for details.")));
+            }
 
         // 6. Return the public URL
         let endpoint = std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
-        let public_url = format!("{}/{}/{}", endpoint, bucket_name, file_name);
+        let public_url = format!("{}/{}/{}", endpoint.trim_end_matches('/'), bucket_name, file_name);
         
         info!("Image successfully uploaded to: {}", public_url);
         Ok(public_url)
+
     }
 }

@@ -16,8 +16,8 @@ impl RedisClient {
         let mut conn = self.pool.get().await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
-        cmd("PING")
-            .query_async::<_, String>(&mut conn)
+        let _: () = cmd("PING")
+            .query_async(&mut *conn)
             .await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -28,12 +28,12 @@ impl RedisClient {
         let mut conn = self.pool.get().await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
-        cmd("SET")
+        let _: () = cmd("SET")
             .arg(key)
             .arg(value)
             .arg("EX")
             .arg(ttl_seconds)
-            .query_async::<_, ()>(&mut conn)
+            .query_async(&mut *conn)
             .await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -46,7 +46,7 @@ impl RedisClient {
 
         let value: Option<String> = cmd("GET")
             .arg(key)
-            .query_async(&mut conn)
+            .query_async(&mut *conn)
             .await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -57,9 +57,9 @@ impl RedisClient {
         let mut conn = self.pool.get().await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
-        cmd("DEL")
+        let _: () = cmd("DEL")
             .arg(key)
-            .query_async::<_, ()>(&mut conn)
+            .query_async(&mut *conn)
             .await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
@@ -72,15 +72,15 @@ impl RedisClient {
 
         let val: i64 = cmd("INCR")
             .arg(key)
-            .query_async(&mut conn)
+            .query_async(&mut *conn)
             .await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 
         if val == 1 {
-            cmd("EXPIRE")
+            let _: () = cmd("EXPIRE")
                 .arg(key)
                 .arg(ttl_seconds)
-                .query_async::<_, ()>(&mut conn)
+                .query_async(&mut *conn)
                 .await
                 .map_err(|e| AppError::RedisError(e.to_string()))?;
         }
@@ -134,7 +134,7 @@ impl RedisClient {
             .arg(rate)
             .arg(burst)
             .arg(now)
-            .invoke_async(&mut conn)
+            .invoke_async(&mut *conn)
             .await
             .map_err(|e: deadpool_redis::redis::RedisError| AppError::RedisError(e.to_string()))?;
 
@@ -151,7 +151,7 @@ impl RedisClient {
 
         let val: i64 = cmd("TTL")
             .arg(key)
-            .query_async(&mut conn)
+            .query_async(&mut *conn)
             .await
             .map_err(|e| AppError::RedisError(e.to_string()))?;
 

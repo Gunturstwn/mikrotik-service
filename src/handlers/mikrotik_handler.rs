@@ -1,17 +1,22 @@
-use axum::{extract::{Path, State}, Json};
-use crate::dto::mikrotik::{MikrotikClientRequest, MikrotikClientResponse, MikrotikResourceResponse};
-use crate::services::mikrotik_service::MikrotikService;
-use crate::services::audit::AuditService;
-use crate::middlewares::auth::UserContext;
 use crate::AppState;
+use crate::dto::mikrotik::{
+    MikrotikClientRequest, MikrotikClientResponse, MikrotikResourceResponse,
+};
 use crate::errors::app_error::AppError;
-use uuid::Uuid;
+use crate::middlewares::auth::UserContext;
+use crate::services::audit::AuditService;
+use crate::services::mikrotik_service::MikrotikService;
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use serde_json::json;
+use uuid::Uuid;
 
 // ... existing helper and handlers ...
 
 /// Get real-time system resource usage from the MikroTik device.
-/// 
+///
 /// ### Resource Metrics:
 /// - **Uptime**: Time since last reboot.
 /// - **CPU Load**: Current CPU percentage.
@@ -39,16 +44,24 @@ pub async fn get_system_resource(
     Path(id): Path<Uuid>,
 ) -> Result<Json<MikrotikResourceResponse>, AppError> {
     let ip = extract_ip(&headers);
-    let aes_key = std::env::var("AES_KEY").map_err(|_| AppError::InternalServerError("AES_KEY not configured".to_string()))?;
+    let aes_key = std::env::var("AES_KEY")
+        .map_err(|_| AppError::InternalServerError("AES_KEY not configured".to_string()))?;
 
-    let res = MikrotikService::get_system_resource(&state.db, &state.mikrotik_pool, id, &aes_key).await?;
+    let res =
+        MikrotikService::get_system_resource(&state.db, &state.mikrotik_pool, id, &aes_key).await?;
 
     // Audit log
     let _ = AuditService::log(
-        &state.db, Some(user_ctx.user_id),
-        "MIKROTIK_CLIENT_READ", "GET", &format!("/api/mikrotik_client/{}", id), 200, &ip,
+        &state.db,
+        Some(user_ctx.user_id),
+        "MIKROTIK_CLIENT_READ",
+        "GET",
+        &format!("/api/mikrotik_client/{}", id),
+        200,
+        &ip,
         Some(json!({ "action": "system_resource_print", "device_id": id })),
-    ).await;
+    )
+    .await;
 
     Ok(Json(res))
 }
@@ -65,7 +78,7 @@ fn extract_ip(headers: &axum::http::HeaderMap) -> String {
 }
 
 /// Create a new MikroTik device client.
-/// 
+///
 /// ### Security Notes:
 /// - Sensitive fields (username, password, ports) are **AES-256-GCM encrypted** at rest.
 /// - Credentials are only decrypted in memory during active connection attempts.
@@ -90,14 +103,22 @@ pub async fn create_client(
     Json(payload): Json<MikrotikClientRequest>,
 ) -> Result<(axum::http::StatusCode, Json<MikrotikClientResponse>), AppError> {
     let ip = extract_ip(&headers);
-    let aes_key = std::env::var("AES_KEY").map_err(|_| AppError::InternalServerError("AES_KEY not configured".to_string()))?;
-    
-    let res = MikrotikService::create_client(&state.db, user_ctx.user_id, payload.clone(), &aes_key).await?;
+    let aes_key = std::env::var("AES_KEY")
+        .map_err(|_| AppError::InternalServerError("AES_KEY not configured".to_string()))?;
+
+    let res =
+        MikrotikService::create_client(&state.db, user_ctx.user_id, payload.clone(), &aes_key)
+            .await?;
 
     // Audit log with masked payload
     let _ = AuditService::log(
-        &state.db, Some(user_ctx.user_id),
-        "MIKROTIK_CLIENT_CREATE", "POST", "/api/mikrotik_client", 201, &ip,
+        &state.db,
+        Some(user_ctx.user_id),
+        "MIKROTIK_CLIENT_CREATE",
+        "POST",
+        "/api/mikrotik_client",
+        201,
+        &ip,
         Some(json!({
             "name_device": payload.name_device,
             "host": payload.host,
@@ -109,7 +130,8 @@ pub async fn create_client(
             "port_ssh": payload.port_ssh.as_ref().map(|_| "encrypted"),
             "location": payload.location,
         })),
-    ).await;
+    )
+    .await;
 
     Ok((axum::http::StatusCode::CREATED, Json(res)))
 }
@@ -134,10 +156,16 @@ pub async fn list_clients(
     let res = MikrotikService::list_clients(&state.db).await?;
 
     let _ = AuditService::log(
-        &state.db, Some(user_ctx.user_id),
-        "MIKROTIK_CLIENT_READ", "GET", "/api/mikrotik_client", 200, &ip,
+        &state.db,
+        Some(user_ctx.user_id),
+        "MIKROTIK_CLIENT_READ",
+        "GET",
+        "/api/mikrotik_client",
+        200,
+        &ip,
         None,
-    ).await;
+    )
+    .await;
 
     Ok(Json(res))
 }
@@ -164,10 +192,16 @@ pub async fn get_client(
     let res = MikrotikService::get_client(&state.db, id).await?;
 
     let _ = AuditService::log(
-        &state.db, Some(user_ctx.user_id),
-        "MIKROTIK_CLIENT_READ", "GET", &format!("/api/mikrotik_client/{}", id), 200, &ip,
+        &state.db,
+        Some(user_ctx.user_id),
+        "MIKROTIK_CLIENT_READ",
+        "GET",
+        &format!("/api/mikrotik_client/{}", id),
+        200,
+        &ip,
         None,
-    ).await;
+    )
+    .await;
 
     Ok(Json(res))
 }
@@ -194,17 +228,25 @@ pub async fn update_client(
     Json(payload): Json<MikrotikClientRequest>,
 ) -> Result<Json<MikrotikClientResponse>, AppError> {
     let ip = extract_ip(&headers);
-    let aes_key = std::env::var("AES_KEY").map_err(|_| AppError::InternalServerError("AES_KEY not configured".to_string()))?;
+    let aes_key = std::env::var("AES_KEY")
+        .map_err(|_| AppError::InternalServerError("AES_KEY not configured".to_string()))?;
 
-    let res = MikrotikService::update_client(&state.db, id, user_ctx.user_id, payload.clone(), &aes_key).await?;
+    let res =
+        MikrotikService::update_client(&state.db, id, user_ctx.user_id, payload.clone(), &aes_key)
+            .await?;
 
     // Invalidate connection in pool
     state.mikrotik_pool.invalidate(id);
 
     // Audit log with masked payload
     let _ = AuditService::log(
-        &state.db, Some(user_ctx.user_id),
-        "MIKROTIK_CLIENT_UPDATE", "PUT", &format!("/api/mikrotik_client/{}", id), 200, &ip,
+        &state.db,
+        Some(user_ctx.user_id),
+        "MIKROTIK_CLIENT_UPDATE",
+        "PUT",
+        &format!("/api/mikrotik_client/{}", id),
+        200,
+        &ip,
         Some(json!({
             "name_device": payload.name_device,
             "host": payload.host,
@@ -216,7 +258,8 @@ pub async fn update_client(
             "port_ssh": payload.port_ssh.as_ref().map(|_| "encrypted"),
             "location": payload.location,
         })),
-    ).await;
+    )
+    .await;
 
     Ok(Json(res))
 }
@@ -240,17 +283,23 @@ pub async fn delete_client(
     Path(id): Path<Uuid>,
 ) -> Result<axum::http::StatusCode, AppError> {
     let ip = extract_ip(&headers);
-    
+
     MikrotikService::delete_client(&state.db, id, user_ctx.user_id).await?;
 
     // Invalidate connection in pool
     state.mikrotik_pool.invalidate(id);
 
     let _ = AuditService::log(
-        &state.db, Some(user_ctx.user_id),
-        "MIKROTIK_CLIENT_DELETE", "DELETE", &format!("/api/mikrotik_client/{}", id), 204, &ip,
+        &state.db,
+        Some(user_ctx.user_id),
+        "MIKROTIK_CLIENT_DELETE",
+        "DELETE",
+        &format!("/api/mikrotik_client/{}", id),
+        204,
+        &ip,
         None,
-    ).await;
+    )
+    .await;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

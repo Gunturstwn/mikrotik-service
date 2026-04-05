@@ -75,9 +75,25 @@ impl EmailWorker {
 
         let from_header = format!("MikroTik Billing <{}>", from_addr);
 
+        let from_header_parsed = match from_header.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                error!("EmailWorker: Failed to parse from-address '{}': {}", from_header, e);
+                return;
+            }
+        };
+
+        let to_addr_parsed = match job.to.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                error!("EmailWorker: Failed to parse to-address '{}': {}", job.to, e);
+                return;
+            }
+        };
+
         let email = match Message::builder()
-            .from(from_header.parse().unwrap())
-            .to(job.to.parse().unwrap())
+            .from(from_header_parsed)
+            .to(to_addr_parsed)
             .subject(job.subject)
             .singlepart(
                 lettre::message::SinglePart::builder()
@@ -90,6 +106,7 @@ impl EmailWorker {
                     return;
                 }
             };
+
 
         match self.smtp_transport.send(&email) {
             Ok(_) => info!("EmailWorker: Successfully sent email to {}", job.to),

@@ -5,18 +5,10 @@ use crate::services::audit::AuditService;
 use crate::middlewares::auth::UserContext;
 use crate::AppState;
 use crate::errors::app_error::AppError;
+use crate::utils::ip::extract_ip_from_headers;
 use validator::Validate;
 
-/// Helper: extract client IP from headers
-fn extract_ip(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .or_else(|| headers.get("host").and_then(|h| h.to_str().ok()))
-        .unwrap_or("unknown")
-        .to_string()
-}
+
 
 #[utoipa::path(
     post,
@@ -36,7 +28,7 @@ pub async fn register(
     user_ctx: UserContext,
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -59,7 +51,7 @@ pub async fn register(
     let mut role: Option<String> = None;
     let mut photo_bytes: Option<Vec<u8>> = None;
 
-    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(format!("Multipart field error: {}", e)))? {
         let field_name = field.name().unwrap_or("").to_string();
         match field_name.as_str() {
             "name" => name = field.text().await.ok(),
@@ -99,13 +91,14 @@ pub async fn register(
         match crate::services::storage_service::StorageService::process_and_upload_image(&state.storage, &bytes).await {
             Ok(url) => Some(url),
             Err(e) => {
-                tracing::warn!("Photo upload failed during registration: {}", e);
-                return Err(e);
+                tracing::error!("NON-CRITICAL: Photo upload failed during registration: {}. Proceeding without photo.", e);
+                None
             }
         }
     } else {
         None
     };
+
 
     let req = RegisterRequest {
         name,
@@ -169,7 +162,7 @@ pub async fn login(
     headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<AuthResponse>, AppError> {
-    let ip = extract_ip(&headers).to_string();
+    let ip = extract_ip_from_headers(&headers);
     req.validate().map_err(|e| AppError::BadRequest(e.to_string()))?;
     let email = req.email.clone();
 
@@ -209,7 +202,7 @@ pub async fn verify_token_handler(
     headers: axum::http::HeaderMap,
     user_ctx: UserContext,
 ) -> Result<Json<VerifyTokenResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -252,7 +245,7 @@ pub async fn verify_email_handler(
     user_ctx: UserContext,
     axum::extract::Path(user_id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -287,7 +280,7 @@ pub async fn forgot_password(
     headers: axum::http::HeaderMap,
     Json(req): Json<ForgotPasswordRequest>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
     let email = req.email.clone();
 
     match AuthService::forgot_password(&state.db, &state.redis, &state.rabbit, req).await {
@@ -324,7 +317,7 @@ pub async fn reset_password(
     headers: axum::http::HeaderMap,
     Json(req): Json<ResetPasswordRequest>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
     let token_prefix = if req.token.len() > 8 { req.token[..8].to_string() } else { req.token.clone() };
     let email = req.email.clone();
 

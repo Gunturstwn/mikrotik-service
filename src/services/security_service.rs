@@ -19,8 +19,9 @@ impl SecurityService {
 
     /// Check if an IP or Account is currently blocked.
     pub async fn check_status(&self, ip: &str, username: &str) -> Result<SecurityStatus, AppError> {
+        let safe_username = self.hash_username(username);
         let ip_block_key = format!("login:block:ip:{}", ip);
-        let user_block_key = format!("login:block:user:{}", username);
+        let user_block_key = format!("login:block:user:{}", safe_username);
 
         // 1. Check IP block
         if let Some(ttl) = self.get_ttl(&ip_block_key).await? {
@@ -34,7 +35,7 @@ impl SecurityService {
 
         // 3. Check if CAPTCHA is required (e.g. > 3 failures)
         let ip_fail_key = format!("login:fail:ip:{}", ip);
-        let user_fail_key = format!("login:fail:user:{}", username);
+        let user_fail_key = format!("login:fail:user:{}", safe_username);
 
         let ip_fails = self.get_count(&ip_fail_key).await?;
         let user_fails = self.get_count(&user_fail_key).await?;
@@ -48,8 +49,9 @@ impl SecurityService {
 
     /// Track a failed login attempt and apply penalties.
     pub async fn track_failure(&self, ip: &str, username: &str) -> Result<u64, AppError> {
+        let safe_username = self.hash_username(username);
         let ip_fail_key = format!("login:fail:ip:{}", ip);
-        let user_fail_key = format!("login:fail:user:{}", username);
+        let user_fail_key = format!("login:fail:user:{}", safe_username);
 
         // Increment failure counters (valid for 24h to track patterns)
         let ip_count = self.redis.incr(&ip_fail_key, 86400).await? as u64;
@@ -76,7 +78,7 @@ impl SecurityService {
 
         if penalty_secs > 0 {
             let ip_block_key = format!("login:block:ip:{}", ip);
-            let user_block_key = format!("login:block:user:{}", username);
+            let user_block_key = format!("login:block:user:{}", safe_username);
 
             self.redis.set_ex(&ip_block_key, "1", penalty_secs as usize).await?;
             self.redis.set_ex(&user_block_key, "1", penalty_secs as usize).await?;
@@ -89,13 +91,21 @@ impl SecurityService {
 
     /// Reset failure counters on successful login.
     pub async fn reset_failures(&self, ip: &str, username: &str) -> Result<(), AppError> {
+        let safe_username = self.hash_username(username);
         let ip_fail_key = format!("login:fail:ip:{}", ip);
-        let user_fail_key = format!("login:fail:user:{}", username);
+        let user_fail_key = format!("login:fail:user:{}", safe_username);
         
         let _ = self.redis.del(&ip_fail_key).await;
         let _ = self.redis.del(&user_fail_key).await;
         
         Ok(())
+    }
+
+    fn hash_username(&self, username: &str) -> String {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(username.as_bytes());
+        hex::encode(hasher.finalize())
     }
 
     async fn get_count(&self, key: &str) -> Result<u64, AppError> {
@@ -107,3 +117,4 @@ impl SecurityService {
         self.redis.ttl(key).await
     }
 }
+
