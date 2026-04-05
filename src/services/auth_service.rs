@@ -4,7 +4,10 @@ use crate::utils::encryption::{hash_password, verify_password};
 use crate::config::auth::create_token;
 use crate::errors::app_error::AppError;
 use sea_orm::*;
+use sea_orm::prelude::Decimal;
 use crate::models::{roles, user_roles};
+use crate::services::security_service::{SecurityService, SecurityStatus};
+use crate::services::captcha_service::CaptchaService;
 use uuid::Uuid;
 use chrono::Utc;
 use tracing::info;
@@ -32,6 +35,11 @@ impl AuthService {
             email: Set(req.email.clone()),
             password: Set(password_hash),
             phone: Set(req.phone),
+            address: Set(req.address),
+            photo: Set(req.photo),
+            lat: Set(req.lat.map(|v| v.to_string().parse::<Decimal>().unwrap_or_default())),
+            lng: Set(req.lng.map(|v| v.to_string().parse::<Decimal>().unwrap_or_default())),
+            payment_token: Set(req.payment_token),
             is_verified: Set(false),
             created_at: Set(Utc::now().naive_utc()),
             updated_at: Set(Utc::now().naive_utc()),
@@ -73,20 +81,69 @@ impl AuthService {
         })
     }
 
-    pub async fn login(db: &DatabaseConnection, req: LoginRequest) -> Result<AuthResponse, AppError> {
-        let user = User::find()
-            .filter(crate::models::users::Column::Email.eq(req.email))
-            .one(db)
-            .await?
-            .ok_or_else(|| AppError::Unauthorized("Invalid credentials".to_string()))?;
+    pub async fn login(
+        db: &DatabaseConnection,
+        security: &SecurityService,
+        captcha: &CaptchaService,
+        ip: &str,
+        req: LoginRequest
+    ) -> Result<AuthResponse, AppError> {
+        let email = req.email.clone();
 
-        if !verify_password(&req.password, &user.password)? {
+        // 1. Check Security Status (IP/User)
+        match security.check_status(ip, &email).await? {
+            SecurityStatus::Blocked(ttl) => {
+                return Err(AppError::Forbidden(format!(
+                    "Security: Account/IP is temporarily locked. Please try again in {} seconds.",
+                    ttl
+                )));
+            }
+            SecurityStatus::CaptchaRequired => {
+                let token = req.captcha_token.as_deref().ok_or_else(|| {
+                    AppError::BadRequest("CAPTCHA required for this login attempt".to_string())
+                })?;
+                
+                if !captcha.verify(token, Some(ip)).await? {
+                    return Err(AppError::BadRequest("Invalid CAPTCHA verification".to_string()));
+                }
+                info!("Security: CAPTCHA verified for user: {}", email);
+            }
+            SecurityStatus::Allowed => {}
+        }
+
+        // 2. Find User
+        let user = User::find()
+            .filter(crate::models::users::Column::Email.eq(&email))
+            .one(db)
+            .await?;
+
+        // 3. Verify Password
+        let is_valid = if let Some(u) = &user {
+            verify_password(&req.password, &u.password).unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !is_valid {
+            // Track failure
+            let penalty = security.track_failure(ip, &email).await?;
+            if penalty > 0 {
+                return Err(AppError::Forbidden(format!(
+                    "Invalid credentials. Too many failures, you are now blocked for {} seconds.",
+                    penalty
+                )));
+            }
             return Err(AppError::Unauthorized("Invalid credentials".to_string()));
         }
+
+        let user = user.unwrap(); // is_valid true guarantees user exists
 
         if !user.is_verified {
             return Err(AppError::Forbidden("Email not verified. Please check your inbox.".to_string()));
         }
+
+        // 4. Login Success -> Reset failures
+        let _ = security.reset_failures(ip, &email).await;
 
         let user_roles_mapped = user_roles::Entity::find()
             .filter(user_roles::Column::UserId.eq(user.id))
@@ -205,15 +262,18 @@ impl AuthService {
         let user_id: Uuid = user_id_str.parse()
             .map_err(|_| AppError::InternalServerError("Corrupted reset token data".to_string()))?;
 
-        // 2. Hash the new password
-        let new_hash = hash_password(&req.new_password)?;
-
-        // 3. Update user in DB
+        // 2. Find user and verify email
         let user = User::find_by_id(user_id)
             .one(db)
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
+        if user.email != req.email {
+            return Err(AppError::BadRequest("Email and token do not match".to_string()));
+        }
+
+        // 3. Hash the new password and update user in DB
+        let new_hash = hash_password(&req.new_password)?;
         let mut user_active: UserActiveModel = user.into();
         user_active.password = Set(new_hash);
         user_active.updated_at = Set(Utc::now().naive_utc());
@@ -222,7 +282,7 @@ impl AuthService {
         // 4. Delete the used token from Redis
         redis.del(&redis_key).await?;
 
-        info!("Password successfully reset for user_id: {}", user_id);
+        info!("Password successfully reset for email: {}", req.email);
         Ok(())
     }
 }

@@ -116,6 +116,9 @@ pub async fn upload_photo(
         phone: None,
         address: None,
         photo: Some(public_url.clone()),
+        lat: None,
+        lng: None,
+        payment_token: None,
     };
 
     let res = UserService::update_profile(&state.db, user_ctx.user_id, update_req).await?;
@@ -250,4 +253,48 @@ pub async fn delete_user(
     ).await;
 
     Ok(axum::http::StatusCode::OK)
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/users/{id}",
+    request_body = UpdateUserRequest,
+    responses(
+        (status = 200, description = "User updated successfully by admin", body = UserProfileResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden (Super Admin required)")
+    ),
+    params(
+        ("id" = uuid::Uuid, Path, description = "User ID to update")
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn update_user(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    user_ctx: UserContext,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    Json(req): Json<UpdateUserRequest>,
+) -> Result<Json<UserProfileResponse>, AppError> {
+    let ip = extract_ip(&headers);
+
+    if !user_ctx.roles.contains(&"Super Admin".to_string()) {
+        let _ = AuditService::log(
+            &state.db, Some(user_ctx.user_id),
+            "USER_UPDATE_BY_ADMIN_FORBIDDEN", "PUT", "/api/users/{id}", 403, &ip,
+            Some(serde_json::json!({"target_user_id": id, "error": "Super Admin role required"})),
+        ).await;
+        return Err(AppError::Forbidden("Super Admin role required".to_string()));
+    }
+
+    let res = UserService::update_profile(&state.db, id, req).await?;
+
+    let _ = AuditService::log(
+        &state.db, Some(user_ctx.user_id),
+        "USER_UPDATED_BY_ADMIN", "PUT", "/api/users/{id}", 200, &ip,
+        Some(serde_json::json!({"target_user_id": id, "updated_by": user_ctx.user_id})),
+    ).await;
+
+    Ok(Json(res))
 }

@@ -43,9 +43,16 @@ impl Modify for SecurityAddon {
         mikrotik_service::handlers::user_handler::upload_photo,
         mikrotik_service::handlers::user_handler::get_users,
         mikrotik_service::handlers::user_handler::get_user,
+        mikrotik_service::handlers::user_handler::update_user,
         mikrotik_service::handlers::user_handler::delete_user,
         mikrotik_service::handlers::export_handler::export_users_csv,
         mikrotik_service::handlers::export_handler::export_users_xlsx,
+        mikrotik_service::handlers::mikrotik_handler::create_client,
+        mikrotik_service::handlers::mikrotik_handler::list_clients,
+        mikrotik_service::handlers::mikrotik_handler::get_client,
+        mikrotik_service::handlers::mikrotik_handler::update_client,
+        mikrotik_service::handlers::mikrotik_handler::delete_client,
+        mikrotik_service::handlers::mikrotik_handler::get_system_resource,
     ),
     components(
         schemas(
@@ -60,6 +67,10 @@ impl Modify for SecurityAddon {
             mikrotik_service::dto::user::UpdateUserRequest,
             mikrotik_service::dto::user::UserListResponse,
             mikrotik_service::dto::user::UploadPhotoRequest,
+            mikrotik_service::errors::app_error::ErrorResponse,
+            mikrotik_service::dto::mikrotik::MikrotikClientRequest,
+            mikrotik_service::dto::mikrotik::MikrotikClientResponse,
+            mikrotik_service::dto::mikrotik::MikrotikResourceResponse,
         )
     ),
     modifiers(&SecurityAddon)
@@ -103,7 +114,7 @@ async fn main() {
             .expect("Invalid SMTP host")
             .port(smtp_port)
             .tls(lettre::transport::smtp::client::Tls::Wrapper(
-                lettre::transport::smtp::client::TlsParameters::new(smtp_host.clone()).unwrap()
+                lettre::transport::smtp::client::TlsParameters::new(smtp_host.clone()).unwrap(),
             ))
     } else {
         // Port 587 uses STARTTLS
@@ -115,8 +126,12 @@ async fn main() {
     if let (Some(u), Some(p)) = (smtp_user.clone(), smtp_pass.clone()) {
         tracing::info!("SMTP: Loading credentials for user: {}", u);
         mailer_builder = mailer_builder
-            .credentials(lettre::transport::smtp::authentication::Credentials::new(u, p))
-            .authentication(vec![lettre::transport::smtp::authentication::Mechanism::Login]);
+            .credentials(lettre::transport::smtp::authentication::Credentials::new(
+                u, p,
+            ))
+            .authentication(vec![
+                lettre::transport::smtp::authentication::Mechanism::Login,
+            ]);
     } else {
         if smtp_user.is_none() {
             tracing::error!("SMTP ERROR: 'SMTP_USER' not found in .env!");
@@ -138,20 +153,31 @@ async fn main() {
     });
 
     let storage = config::storage::connect().await;
-    let state = AppState::new(db.clone(), redis, rabbit, storage);
+    let security = mikrotik_service::services::security_service::SecurityService::new(redis.clone());
+    let captcha = mikrotik_service::services::captcha_service::CaptchaService::new();
+    let mikrotik_pool = std::sync::Arc::new(mikrotik_service::pool::MikrotikPool::new(30));
+
+    // Start MikroTik connection pool cleanup task
+    mikrotik_pool.clone().start_cleanup_task();
+
+    let state = AppState::new(db.clone(), redis, rabbit, storage, security, captcha, mikrotik_pool.clone());
 
     // Run migrations automatically on startup (None type specified to fix inference)
     migration::Migrator::up(&db, None)
         .await
         .expect("Failed to run migrations");
 
-    let app = routes::create_router(state)
+    let app = routes::create_router(state.clone())
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            mikrotik_service::middlewares::global_rate_limit_middleware,
+        ))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let port = std::env::var("APP_PORT")
-        .unwrap_or("3000".to_string())
+        .unwrap_or("5150".to_string())
         .parse::<u16>()
-        .unwrap_or(3000);
+        .unwrap_or(5150);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("Server starting at http://{}", addr);
     info!("Swagger UI at http://{}/swagger-ui", addr);

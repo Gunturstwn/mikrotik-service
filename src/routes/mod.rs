@@ -2,10 +2,10 @@ mod health;
 mod auth_routes;
 mod user_routes;
 mod export_routes;
+mod mikrotik_routes;
 
-use axum::{Router, middleware};
+use axum::Router;
 use crate::AppState;
-use crate::middlewares::{rate_limit_middleware, login_attempts_middleware};
 use tower_http::cors::CorsLayer;
 use axum::http::{HeaderValue, Method};
 
@@ -30,6 +30,14 @@ pub fn create_router(state: AppState) -> Router {
             Method::PATCH,
             Method::OPTIONS,
         ])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -40,11 +48,10 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .nest("/api/health", health::routes())
-        .nest("/api/auth", auth_routes::routes())
+        .nest("/api/auth", auth_routes::routes(state.clone()))
         .nest("/api/users", user_routes::routes())
         .nest("/api/export", export_routes::routes())
+        .nest("/api/mikrotik_client", mikrotik_routes::routes())
         .layer(cors)
-        .layer(middleware::from_fn_with_state(state.clone(), login_attempts_middleware))
-        .layer(middleware::from_fn(rate_limit_middleware))
         .with_state(state)
 }

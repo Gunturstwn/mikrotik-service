@@ -3,6 +3,7 @@ use crate::models::users::{Entity as User, ActiveModel as UserActiveModel};
 use crate::models::{roles, user_roles};
 use crate::errors::app_error::AppError;
 use sea_orm::*;
+use sea_orm::prelude::Decimal;
 use uuid::Uuid;
 use chrono::Utc;
 
@@ -24,6 +25,9 @@ impl UserService {
             phone: user.phone,
             photo: user.photo,
             address: user.address,
+            lat: user.lat.map(|v| v.to_string().parse::<f64>().unwrap_or_default()),
+            lng: user.lng.map(|v| v.to_string().parse::<f64>().unwrap_or_default()),
+            payment_token: user.payment_token,
             is_verified: user.is_verified,
             roles: user_role_names,
         })
@@ -52,6 +56,15 @@ impl UserService {
         if let Some(photo) = req.photo {
             user.photo = Set(Some(photo));
         }
+        if let Some(lat) = req.lat {
+            user.lat = Set(Some(lat.to_string().parse::<Decimal>().unwrap_or_default()));
+        }
+        if let Some(lng) = req.lng {
+            user.lng = Set(Some(lng.to_string().parse::<Decimal>().unwrap_or_default()));
+        }
+        if let Some(payment_token) = req.payment_token {
+            user.payment_token = Set(Some(payment_token));
+        }
         user.updated_at = Set(Utc::now().naive_utc());
 
         let updated_user = user.update(db).await?;
@@ -64,6 +77,9 @@ impl UserService {
             phone: updated_user.phone,
             photo: updated_user.photo,
             address: updated_user.address,
+            lat: updated_user.lat.map(|v| v.to_string().parse::<f64>().unwrap_or_default()),
+            lng: updated_user.lng.map(|v| v.to_string().parse::<f64>().unwrap_or_default()),
+            payment_token: updated_user.payment_token,
             is_verified: updated_user.is_verified,
             roles: user_role_names,
         })
@@ -91,6 +107,9 @@ impl UserService {
                 phone: user.phone,
                 photo: user.photo,
                 address: user.address,
+                lat: user.lat.map(|v| v.to_string().parse::<f64>().unwrap_or_default()),
+                lng: user.lng.map(|v| v.to_string().parse::<f64>().unwrap_or_default()),
+                payment_token: user.payment_token,
                 is_verified: user.is_verified,
                 roles: user_role_names,
             });

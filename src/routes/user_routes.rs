@@ -9,5 +9,6 @@ pub fn routes() -> Router<AppState> {
         .route("/me", put(user_handler::update_me))
         .route("/me/photo", axum::routing::post(user_handler::upload_photo))
         .route("/:id", get(user_handler::get_user))
+        .route("/:id", put(user_handler::update_user))
         .route("/:id", delete(user_handler::delete_user))
 }

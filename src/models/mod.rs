@@ -4,3 +4,4 @@ pub mod user_roles;
 pub mod permissions;
 pub mod role_permissions;
 pub mod audit_logs;
+pub mod mikrotik_clients;

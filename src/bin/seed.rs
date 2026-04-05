@@ -1,5 +1,5 @@
 use mikrotik_service::config;
-use mikrotik_service::models::{roles, user_roles, users, permissions, role_permissions};
+use mikrotik_service::models::{permissions, role_permissions, roles, user_roles, users};
 use mikrotik_service::utils::encryption::hash_password;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
@@ -11,13 +11,7 @@ async fn main() {
     println!("Connecting to the database...");
     let db = config::database::connect().await;
 
-    let role_names = vec![
-        "Super Admin",
-        "Admin",
-        "Finance",
-        "Teknisi",
-        "Customer",
-    ];
+    let role_names = vec!["Super Admin", "Admin", "Finance", "Teknisi", "Customer"];
 
     println!("Seeding Roles...");
     let mut super_admin_role_id = Uuid::nil();
@@ -64,7 +58,7 @@ async fn main() {
     }
 
     println!("Seeding Super Admin User...");
-    let email = "gntr4rs@gmail.com";
+    let email = "gntrstwn19x@gmail.com";
     let password = "numbernine9";
 
     let existing_user = users::Entity::find()
@@ -81,7 +75,7 @@ async fn main() {
         None => {
             let id = Uuid::new_v4();
             let hashed_password = hash_password(password).expect("Failed to hash password");
-            
+
             let new_user = users::ActiveModel {
                 id: Set(id),
                 name: Set("Super Administrator".to_string()),
@@ -92,7 +86,7 @@ async fn main() {
                 updated_at: Set(chrono::Utc::now().naive_utc()),
                 ..Default::default()
             };
-            
+
             new_user.insert(&db).await.unwrap();
             println!("Inserted User '{}'.", email);
             id
@@ -125,22 +119,22 @@ async fn main() {
     println!("\nSeeding Permissions...");
 
     let permission_codes = vec![
-        ("users.list",       "List all users"),
-        ("users.detail",     "View user detail"),
-        ("users.create",     "Register / create user"),
-        ("users.update",     "Update user profile"),
-        ("users.delete",     "Soft-delete user"),
-        ("users.verify",     "Verify user email"),
-        ("export.csv",       "Export users to CSV"),
-        ("export.xlsx",      "Export users to XLSX"),
-        ("audit.view",       "View audit logs"),
-        ("billing.view",     "View billing data"),
-        ("billing.create",   "Create billing invoice"),
-        ("billing.update",   "Update billing invoice"),
-        ("device.view",      "View MikroTik devices"),
-        ("device.manage",    "Manage MikroTik devices"),
-        ("profile.update",   "Update own profile"),
-        ("profile.photo",    "Upload own photo"),
+        ("users.list", "List all users"),
+        ("users.detail", "View user detail"),
+        ("users.create", "Register / create user"),
+        ("users.update", "Update user profile"),
+        ("users.delete", "Soft-delete user"),
+        ("users.verify", "Verify user email"),
+        ("export.csv", "Export users to CSV"),
+        ("export.xlsx", "Export users to XLSX"),
+        ("audit.view", "View audit logs"),
+        ("billing.view", "View billing data"),
+        ("billing.create", "Create billing invoice"),
+        ("billing.update", "Update billing invoice"),
+        ("device.view", "View MikroTik devices"),
+        ("device.manage", "Manage MikroTik devices"),
+        ("profile.update", "Update own profile"),
+        ("profile.photo", "Upload own photo"),
     ];
 
     let mut perm_ids: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
@@ -184,38 +178,49 @@ async fn main() {
 
     // Admin → most except verify, export, audit
     let admin_perms = vec![
-        "users.list", "users.detail", "users.create", "users.update",
-        "billing.view", "billing.create", "billing.update",
-        "device.view", "device.manage",
-        "profile.update", "profile.photo",
+        "users.list",
+        "users.detail",
+        "users.create",
+        "users.update",
+        "billing.view",
+        "billing.create",
+        "billing.update",
+        "device.view",
+        "device.manage",
+        "profile.update",
+        "profile.photo",
     ];
 
     // Finance → billing + profile
     let finance_perms = vec![
-        "billing.view", "billing.create", "billing.update",
-        "users.list", "export.csv", "export.xlsx",
-        "profile.update", "profile.photo",
+        "billing.view",
+        "billing.create",
+        "billing.update",
+        "users.list",
+        "export.csv",
+        "export.xlsx",
+        "profile.update",
+        "profile.photo",
     ];
 
     // Teknisi → device + profile
     let teknisi_perms = vec![
-        "device.view", "device.manage",
+        "device.view",
+        "device.manage",
         "users.list",
-        "profile.update", "profile.photo",
+        "profile.update",
+        "profile.photo",
     ];
 
     // Customer → own profile only
-    let customer_perms = vec![
-        "profile.update", "profile.photo",
-        "billing.view",
-    ];
+    let customer_perms = vec!["profile.update", "profile.photo", "billing.view"];
 
     let role_perm_map = vec![
         (super_admin_role_id, super_admin_perms),
-        (admin_role_id,       admin_perms),
-        (finance_role_id,     finance_perms),
-        (teknisi_role_id,     teknisi_perms),
-        (customer_role_id,    customer_perms),
+        (admin_role_id, admin_perms),
+        (finance_role_id, finance_perms),
+        (teknisi_role_id, teknisi_perms),
+        (customer_role_id, customer_perms),
     ];
 
     for (role_id, codes) in role_perm_map {
@@ -242,4 +247,3 @@ async fn main() {
 
     println!("\n✅ Seeding process completed successfully!");
 }
-
