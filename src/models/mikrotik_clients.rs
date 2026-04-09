@@ -15,7 +15,7 @@ pub struct Model {
     pub port_winbox: Option<String>, // Encrypted
     pub port_api: Option<String>, // Encrypted
     pub port_ftp: Option<String>, // Encrypted
-    pub port_ssh: Option<i32>,
+    pub port_ssh: Option<String>, // Encrypted
     pub location: Option<String>,
     pub latitude: Option<Decimal>,
     pub longitude: Option<Decimal>,
@@ -94,7 +94,14 @@ impl Model {
         }
     }
 
-    pub fn set_encrypted_fields(&mut self, username: &str, password: &str, winbox: Option<&str>, api: Option<&str>, ftp: Option<&str>, key: &str) -> Result<(), AppError> {
+    pub fn decrypt_port_ssh(&self, key: &str) -> Result<Option<String>, AppError> {
+        match &self.port_ssh {
+            Some(p) => Ok(Some(decrypt(p, key)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_encrypted_fields(&mut self, username: &str, password: &str, winbox: Option<&str>, api: Option<&str>, ftp: Option<&str>, ssh: Option<&str>, key: &str) -> Result<(), AppError> {
         self.username = encrypt(username, key)?;
         self.password = encrypt(password, key)?;
         self.port_winbox = match winbox {
@@ -106,6 +113,10 @@ impl Model {
             None => None,
         };
         self.port_ftp = match ftp {
+            Some(p) => Some(encrypt(p, key)?),
+            None => None,
+        };
+        self.port_ssh = match ssh {
             Some(p) => Some(encrypt(p, key)?),
             None => None,
         };

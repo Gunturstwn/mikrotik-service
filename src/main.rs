@@ -34,6 +34,7 @@ impl Modify for SecurityAddon {
         mikrotik_service::handlers::health_handler::health_check,
         mikrotik_service::handlers::auth_handler::register,
         mikrotik_service::handlers::auth_handler::login,
+        mikrotik_service::handlers::auth_handler::get_login_status,
         mikrotik_service::handlers::auth_handler::verify_token_handler,
         mikrotik_service::handlers::auth_handler::verify_email_handler,
         mikrotik_service::handlers::auth_handler::forgot_password,
@@ -53,6 +54,13 @@ impl Modify for SecurityAddon {
         mikrotik_service::handlers::mikrotik_handler::update_client,
         mikrotik_service::handlers::mikrotik_handler::delete_client,
         mikrotik_service::handlers::mikrotik_handler::get_system_resource,
+        mikrotik_service::handlers::mikrotik_handler::get_interfaces,
+        mikrotik_service::handlers::mikrotik_handler::monitor_interfaces,
+        mikrotik_service::handlers::mikrotik_handler::get_torch,
+        mikrotik_service::handlers::mikrotik_handler::get_config_history,
+        mikrotik_service::handlers::mikrotik_handler::view_config_snapshot,
+        mikrotik_service::handlers::mikrotik_handler::backup_now,
+        mikrotik_service::handlers::mikrotik_handler::get_config_diff,
     ),
     components(
         schemas(
@@ -63,6 +71,7 @@ impl Modify for SecurityAddon {
             mikrotik_service::dto::auth::ForgotPasswordRequest,
             mikrotik_service::dto::auth::ResetPasswordRequest,
             mikrotik_service::dto::auth::VerifyTokenResponse,
+            mikrotik_service::dto::auth::LoginStatusResponse,
             mikrotik_service::dto::user::UserProfileResponse,
             mikrotik_service::dto::user::UpdateUserRequest,
             mikrotik_service::dto::user::UserListResponse,
@@ -71,6 +80,12 @@ impl Modify for SecurityAddon {
             mikrotik_service::dto::mikrotik::MikrotikClientRequest,
             mikrotik_service::dto::mikrotik::MikrotikClientResponse,
             mikrotik_service::dto::mikrotik::MikrotikResourceResponse,
+            mikrotik_service::dto::mikrotik::MikrotikInterfaceResponse,
+            mikrotik_service::dto::mikrotik::MikrotikMonitorResponse,
+            mikrotik_service::dto::mikrotik::MikrotikTorchResponse,
+            mikrotik_service::dto::mikrotik::MikrotikConfigSnapshotResponse,
+            mikrotik_service::dto::mikrotik::MikrotikConfigViewResponse,
+            mikrotik_service::dto::mikrotik::MikrotikConfigDiffResponse,
         )
     ),
     modifiers(&SecurityAddon)
@@ -162,9 +177,15 @@ async fn main() {
     let mikrotik_pool = std::sync::Arc::new(mikrotik_service::pool::MikrotikPool::new(30));
 
     // Start MikroTik connection pool cleanup task
-    mikrotik_pool.clone().start_cleanup_task();
+    mikrotik_pool.clone().start_cleanup_task(db.clone());
 
     let state = AppState::new(db.clone(), redis, rabbit, storage, security, captcha, mikrotik_pool.clone());
+    
+    // Start MetricsWorker background task
+    let state_metrics = state.clone();
+    tokio::spawn(async move {
+        mikrotik_service::workers::MetricsWorker::run(state_metrics).await;
+    });
 
     // Run migrations automatically on startup (None type specified to fix inference)
     migration::Migrator::up(&db, None)

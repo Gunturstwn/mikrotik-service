@@ -1,4 +1,4 @@
-use crate::dto::auth::{RegisterRequest, LoginRequest, AuthResponse, VerifyTokenResponse, ForgotPasswordRequest, ResetPasswordRequest};
+use crate::dto::auth::{RegisterRequest, LoginRequest, AuthResponse, VerifyTokenResponse, ForgotPasswordRequest, ResetPasswordRequest, LoginStatusResponse};
 use crate::models::users::{Entity as User, ActiveModel as UserActiveModel};
 use crate::utils::encryption::{hash_password, verify_password};
 use crate::config::auth::create_token;
@@ -284,5 +284,26 @@ impl AuthService {
 
         info!("Password successfully reset for email: {}", req.email);
         Ok(())
+    }
+
+    pub async fn check_login_status(
+        security: &SecurityService,
+        ip: &str,
+        email: &str,
+    ) -> Result<LoginStatusResponse, AppError> {
+        match security.check_status(ip, email).await? {
+            SecurityStatus::Allowed => Ok(LoginStatusResponse {
+                captcha_required: false,
+                blocked_until: None,
+            }),
+            SecurityStatus::CaptchaRequired => Ok(LoginStatusResponse {
+                captcha_required: true,
+                blocked_until: None,
+            }),
+            SecurityStatus::Blocked(ttl) => Ok(LoginStatusResponse {
+                captcha_required: true, // If blocked, captcha is definitely required once unblocked
+                blocked_until: Some(ttl),
+            }),
+        }
     }
 }

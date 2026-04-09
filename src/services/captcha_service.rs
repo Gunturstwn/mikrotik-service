@@ -17,7 +17,7 @@ pub struct TurnstileProvider {
 impl TurnstileProvider {
     pub fn new() -> Self {
         let secret_key = env::var("TURNSTILE_SECRET_KEY")
-            .unwrap_or_else(|_| "1x0000000000000000000000000000000AA".to_string()); // Default testing key
+            .unwrap_or_else(|_| "1x00000000000000000000AA".to_string()); // Default testing key
         Self {
             secret_key,
             client: Client::new(),
@@ -41,7 +41,9 @@ impl CaptchaProvider for TurnstileProvider {
         ].to_vec();
 
         if let Some(ip_addr) = ip {
-            params.push(("remoteip", ip_addr));
+            if ip_addr != "unknown" {
+                params.push(("remoteip", ip_addr));
+            }
         }
 
         let res = self.client.post("https://challenges.cloudflare.com/turnstile/v0/siteverify")

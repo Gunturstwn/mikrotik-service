@@ -7,11 +7,15 @@ use uuid::Uuid;
 use crate::models::mikrotik_clients::Entity as MikrotikClient;
 use crate::errors::app_error::AppError;
 use sea_orm::{DatabaseConnection, EntityTrait, QueryFilter, ColumnTrait};
-use tracing::info;
+use tracing::{info, error, warn};
+use crate::services::audit::audit_service::AuditService;
+use serde_json::json;
 
 pub struct MikrotikPoolEntry {
     pub device: Arc<Mutex<MikrotikDevice>>,
     pub last_used: Instant,
+    pub is_used: bool,
+    pub device_id: Uuid,
 }
 
 pub struct MikrotikPool {
@@ -33,11 +37,15 @@ impl MikrotikPool {
         device_id: Uuid,
         db: &DatabaseConnection,
         aes_key: &str,
+        user_id: Option<Uuid>,
     ) -> Result<Arc<Mutex<MikrotikDevice>>, AppError> {
+        let start_time = Instant::now();
+
         // 1. Try to get from cache first
         if let Some(mut entry) = self.inner.get_mut(&device_id) {
             if entry.last_used.elapsed() < self.ttl {
                 entry.last_used = Instant::now();
+                entry.is_used = true;
                 return Ok(Arc::clone(&entry.device));
             }
         }
@@ -51,19 +59,68 @@ impl MikrotikPool {
             .await?
             .ok_or_else(|| AppError::NotFound("MikroTik client not found or deleted".to_string()))?;
 
-        let device = crate::config::mikrotik::MikrotikConnection::connect(&client, aes_key).await?;
-        let device_arc = Arc::new(Mutex::new(device));
+        // Attempt connection and measure duration
+        let result = crate::config::mikrotik::MikrotikConnection::connect(&client, aes_key).await;
+        let duration_ms = start_time.elapsed().as_millis() as u64;
 
-        self.inner.insert(device_id, MikrotikPoolEntry {
-            device: Arc::clone(&device_arc),
-            last_used: Instant::now(),
-        });
+        match result {
+            Ok(device) => {
+                info!("CONNECTED_SUCCESS: Device {} connected in {}ms", device_id, duration_ms);
+                
+                // Log success to audit trail
+                let _ = AuditService::log(
+                    db,
+                    user_id,
+                    "MIKROTIK_CONNECTION",
+                    "POOL",
+                    &format!("/mikrotik/{}", device_id),
+                    200,
+                    &client.host,
+                    Some(json!({
+                        "status": "SUCCESS",
+                        "device_id": device_id,
+                        "duration_ms": duration_ms,
+                        "message": "Connection established successfully"
+                    })),
+                ).await;
 
-        Ok(device_arc)
+                let device_arc = Arc::new(Mutex::new(device));
+                self.inner.insert(device_id, MikrotikPoolEntry {
+                    device: Arc::clone(&device_arc),
+                    last_used: Instant::now(),
+                    is_used: true,
+                    device_id,
+                });
+
+                Ok(device_arc)
+            }
+            Err(e) => {
+                error!("CONNECTED_FAILED: Device {} failed to connect after {}ms. Reason: {}", device_id, duration_ms, e);
+                
+                // Log failure to audit trail
+                let _ = AuditService::log(
+                    db,
+                    user_id,
+                    "MIKROTIK_CONNECTION",
+                    "POOL",
+                    &format!("/mikrotik/{}", device_id),
+                    500,
+                    &client.host,
+                    Some(json!({
+                        "status": "FAILED",
+                        "device_id": device_id,
+                        "duration_ms": duration_ms,
+                        "message": format!("{}", e)
+                    })),
+                ).await;
+
+                Err(e)
+            }
+        }
     }
 
     /// Background task to clean up expired connections.
-    pub fn start_cleanup_task(self: Arc<Self>) {
+    pub fn start_cleanup_task(self: Arc<Self>, db: DatabaseConnection) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60)); // Check every minute
             loop {
@@ -73,12 +130,30 @@ impl MikrotikPool {
 
                 for entry in self.inner.iter() {
                     if now.duration_since(entry.last_used) > self.ttl {
-                        to_remove.push(*entry.key());
+                        to_remove.push((*entry.key(), entry.is_used));
                     }
                 }
 
-                for id in to_remove {
-                    info!("MikroTik Pool: Evicting expired connection for device {}", id);
+                for (id, was_used) in to_remove {
+                    if !was_used {
+                        warn!("MikroTik Pool: Evicting expired connection for device {} (NEVER USED)", id);
+                        let _ = AuditService::log(
+                            &db,
+                            None,
+                            "MIKROTIK_CONNECTION",
+                            "POOL_CLEANUP",
+                            &format!("/mikrotik/{}", id),
+                            410,
+                            "0.0.0.0", // IP not available during cleanup
+                            Some(json!({
+                                "status": "EXPIRED_UNUSED",
+                                "device_id": id,
+                                "message": "Connection evicted after inactivity without being used"
+                            })),
+                        ).await;
+                    } else {
+                        info!("MikroTik Pool: Evicting expired connection for device {}", id);
+                    }
                     self.inner.remove(&id);
                 }
             }

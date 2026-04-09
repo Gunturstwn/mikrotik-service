@@ -53,19 +53,37 @@ pub struct ErrorResponse {
     pub code: u16,
 }
 
+impl AppError {
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            AppError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::RedisError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::RabbitMQError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::StorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::InternalServerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, error) = match self {
-            AppError::DatabaseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR"),
-            AppError::RedisError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "REDIS_ERROR"),
-            AppError::RabbitMQError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "RABBITMQ_ERROR"),
-            AppError::StorageError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "STORAGE_ERROR"),
-            AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
-            AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
-            AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "FORBIDDEN"),
-            AppError::InternalServerError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_SERVER_ERROR"),
-            AppError::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
-            AppError::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMIT_EXCEEDED"),
+        let status = self.status_code();
+        let error = match self {
+            AppError::DatabaseError(_) => "DATABASE_ERROR",
+            AppError::RedisError(_) => "REDIS_ERROR",
+            AppError::RabbitMQError(_) => "RABBITMQ_ERROR",
+            AppError::StorageError(_) => "STORAGE_ERROR",
+            AppError::BadRequest(_) => "BAD_REQUEST",
+            AppError::Unauthorized(_) => "UNAUTHORIZED",
+            AppError::Forbidden(_) => "FORBIDDEN",
+            AppError::InternalServerError(_) => "INTERNAL_SERVER_ERROR",
+            AppError::NotFound(_) => "NOT_FOUND",
+            AppError::TooManyRequests(_) => "RATE_LIMIT_EXCEEDED",
         };
 
         let message = self.to_string();

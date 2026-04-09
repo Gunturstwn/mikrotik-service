@@ -94,3 +94,9 @@ pub struct VerifyTokenResponse {
     pub valid: bool,
     pub user_id: Option<String>,
 }
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LoginStatusResponse {
+    pub captcha_required: bool,
+    pub blocked_until: Option<u64>, // Nullable, seconds remaining
+}

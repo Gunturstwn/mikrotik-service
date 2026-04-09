@@ -1,5 +1,5 @@
-use axum::{extract::State, Json};
-use crate::dto::auth::{RegisterRequest, LoginRequest, AuthResponse, ForgotPasswordRequest, ResetPasswordRequest, VerifyTokenResponse};
+use axum::{extract::{State, Query}, Json};
+use crate::dto::auth::{RegisterRequest, LoginRequest, AuthResponse, ForgotPasswordRequest, ResetPasswordRequest, VerifyTokenResponse, LoginStatusResponse};
 use crate::services::auth_service::AuthService;
 use crate::services::audit::AuditService;
 use crate::middlewares::auth::UserContext;
@@ -177,15 +177,56 @@ pub async fn login(
             Ok(Json(res))
         }
         Err(e) => {
+            let status = e.status_code();
             let _ = AuditService::log(
                 &state.db, None,
-                "USER_LOGIN_FAILED", "POST", "/api/auth/login", 401, &ip,
+                "USER_LOGIN_FAILED", "POST", "/api/auth/login", status.as_u16() as i32, &ip,
                 Some(serde_json::json!({"email": email, "error": e.to_string()})),
             ).await;
             Err(e)
         }
     }
 }
+
+#[derive(Debug, serde::Deserialize, validator::Validate)]
+pub struct LoginStatusQuery {
+    #[validate(email)]
+    pub email: String,
+}
+
+/// Checks the security status of an email/IP (CAPTCHA or Blocked).
+#[utoipa::path(
+    get,
+    path = "/api/auth/login-status",
+    params(
+        ("email" = String, Query, description = "Email to check status for")
+    ),
+    responses(
+        (status = 200, description = "Status retrieved", body = LoginStatusResponse),
+        (status = 400, description = "Invalid email format")
+    ),
+    tag = "Authentication"
+)]
+pub async fn get_login_status(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<LoginStatusQuery>,
+) -> Result<Json<LoginStatusResponse>, AppError> {
+    let ip = extract_ip_from_headers(&headers);
+    
+    // If email validation fails, just return Allowed instead of 400 error.
+    // This provides better UX while the user is still typing.
+    if query.validate().is_err() {
+        return Ok(Json(LoginStatusResponse {
+            captcha_required: false,
+            blocked_until: None,
+        }));
+    }
+    
+    let res = AuthService::check_login_status(&state.security, &ip, &query.email).await?;
+    Ok(Json(res))
+}
+
 
 #[utoipa::path(
     post,

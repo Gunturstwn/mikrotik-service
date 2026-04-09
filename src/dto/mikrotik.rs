@@ -27,9 +27,9 @@ pub struct MikrotikClientRequest {
     /// Optional FTP port (encrypted at rest)
     #[schema(example = "21")]
     pub port_ftp: Option<String>,
-    /// Optional SSH port
-    #[schema(example = 22)]
-    pub port_ssh: Option<i32>,
+    /// Optional SSH port (encrypted at rest)
+    #[schema(example = "22")]
+    pub port_ssh: Option<String>,
     /// Physical location description
     #[schema(example = "Jakarta Data Center, Rack A1")]
     pub location: Option<String>,
@@ -46,7 +46,10 @@ pub struct MikrotikClientResponse {
     /// Note: Encrypted in DB, masked in response for security
     #[schema(example = "********")]
     pub username: String,
-    pub port_ssh: Option<i32>,
+    pub port_ssh: Option<String>,
+    pub port_winbox: Option<String>,
+    pub port_api: Option<String>,
+    pub port_ftp: Option<String>,
     pub location: Option<String>,
     pub latitude: Option<Decimal>,
     pub longitude: Option<Decimal>,
@@ -73,4 +76,88 @@ pub struct MikrotikResourceResponse {
     pub free_hdd_space: i64,
     #[schema(example = 2000000000)]
     pub total_hdd_space: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikInterfaceResponse {
+    #[schema(example = "ether1")]
+    pub name: String,
+    #[schema(example = "ether1")]
+    pub default_name: Option<String>,
+    #[schema(example = "ether")]
+    pub type_name: Option<String>,
+    #[schema(example = 1500)]
+    pub mtu: Option<i32>,
+    #[schema(example = 1500)]
+    pub actual_mtu: Option<i32>,
+    #[schema(example = "00:00:00:00:00:00")]
+    pub mac_address: Option<String>,
+    #[schema(example = "jan/01/1970 00:00:00")]
+    pub last_link_up_time: Option<String>,
+    #[schema(example = 0)]
+    pub link_downs: Option<i32>,
+    #[schema(example = 123456789)]
+    pub rx_byte: Option<u64>,
+    #[schema(example = 123456789)]
+    pub tx_byte: Option<u64>,
+    #[schema(example = 123456)]
+    pub rx_packet: Option<u64>,
+    #[schema(example = 123456)]
+    pub tx_packet: Option<u64>,
+    #[schema(example = 0)]
+    pub rx_error: Option<u64>,
+    #[schema(example = 0)]
+    pub tx_error: Option<u64>,
+    #[schema(example = 0)]
+    pub rx_drop: Option<u64>,
+    #[schema(example = 0)]
+    pub tx_drop: Option<u64>,
+    pub running: bool,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikMonitorResponse {
+    pub name: String,
+    #[schema(example = 1000000)]
+    pub rx_bits_per_second: u64,
+    #[schema(example = 500000)]
+    pub tx_bits_per_second: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikTorchResponse {
+    pub source_address: Option<String>,
+    pub destination_address: Option<String>,
+    pub protocol: Option<String>,
+    pub port: Option<String>,
+    #[schema(example = 1000000)]
+    pub tx_rate: u64,
+    #[schema(example = 500000)]
+    pub rx_rate: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikConfigSnapshotResponse {
+    pub id: Uuid,
+    pub config_hash: String,
+    pub created_at: NaiveDateTime,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikConfigViewResponse {
+    pub id: Uuid,
+    pub config_content: String,
+    pub created_at: NaiveDateTime,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikConfigDiffItem {
+    pub status: String, // "added", "removed", "unchanged"
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct MikrotikConfigDiffResponse {
+    pub diffs: Vec<MikrotikConfigDiffItem>,
 }

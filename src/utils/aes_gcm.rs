@@ -5,14 +5,20 @@ use aes_gcm::{
 use base64::{engine::general_purpose, Engine as _};
 use rand::{rngs::OsRng, RngCore};
 use crate::errors::app_error::AppError;
+use hex;
 
 pub fn encrypt(data: &str, key: &str) -> Result<String, AppError> {
-    let key_bytes = key.as_bytes();
+    let key_bytes = if key.len() == 64 {
+        hex::decode(key).map_err(|e| AppError::InternalServerError(format!("Invalid AES key hex: {}", e)))?
+    } else {
+        key.as_bytes().to_vec()
+    };
+
     if key_bytes.len() != 32 {
         return Err(AppError::InternalServerError("AES key must be exactly 32 bytes for AES-256".to_string()));
     }
 
-    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
         .map_err(|e| AppError::InternalServerError(format!("AES cipher Init failed: {}", e)))?;
 
     let mut nonce_bytes = [0u8; 12];
@@ -31,7 +37,12 @@ pub fn encrypt(data: &str, key: &str) -> Result<String, AppError> {
 }
 
 pub fn decrypt(encrypted_base64: &str, key: &str) -> Result<String, AppError> {
-    let key_bytes = key.as_bytes();
+    let key_bytes = if key.len() == 64 {
+        hex::decode(key).map_err(|e| AppError::InternalServerError(format!("Invalid AES key hex: {}", e)))?
+    } else {
+        key.as_bytes().to_vec()
+    };
+
     if key_bytes.len() != 32 {
         return Err(AppError::InternalServerError("AES key must be exactly 32 bytes for AES-256".to_string()));
     }
@@ -47,7 +58,7 @@ pub fn decrypt(encrypted_base64: &str, key: &str) -> Result<String, AppError> {
     let (nonce_bytes, ciphertext) = combined.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let cipher = Aes256Gcm::new_from_slice(key_bytes)
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
         .map_err(|e| AppError::InternalServerError(format!("AES cipher Init failed: {}", e)))?;
 
     let decrypted_bytes = cipher
