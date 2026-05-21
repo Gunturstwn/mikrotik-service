@@ -51,12 +51,12 @@ pub struct RegisterRequest {
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct LoginRequest {
     #[validate(email)]
-    #[schema(example = "customer@mnet.com")]
+    #[schema(example = "gntrstwn19x@gmail.com")]
     pub email: String,
 
     // Issue fix #8: Tambah validasi panjang password — tidak boleh kosong
     #[validate(length(min = 1, message = "Password cannot be empty"))]
-    #[schema(example = "secure_password_123")]
+    #[schema(example = "numbernine9")]
     pub password: String,
 
     /// Cloudflare Turnstile token. Required if the system detects suspicious login failure patterns.

@@ -6,3 +6,4 @@ pub mod permission_service;
 pub mod security_service;
 pub mod captcha_service;
 pub mod mikrotik_service;
+pub mod telegram_service;

@@ -1,5 +1,7 @@
 use mikrotik_service::config;
-use mikrotik_service::models::{permissions, role_permissions, roles, user_roles, users};
+use mikrotik_service::models::{mikrotik_clients, permissions, role_permissions, roles, user_roles, users};
+use mikrotik_service::utils::aes_gcm::encrypt;
+use sea_orm::prelude::Decimal;
 use mikrotik_service::utils::encryption::hash_password;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
@@ -244,6 +246,147 @@ async fn main() {
         }
     }
     println!("Role-Permission assignments completed.");
+
+    // ═══════════════════════════════════════════════
+    //  MIKROTIK CLIENTS SEEDING
+    // ═══════════════════════════════════════════════
+    println!("\nSeeding MikroTik Clients...");
+
+    let aes_key = std::env::var("AES_KEY")
+        .expect("AES_KEY harus di-set di .env untuk enkripsi data MikroTik");
+
+    struct DeviceSeed {
+        name_device: &'static str,
+        host: &'static str,
+        username: &'static str,
+        password: &'static str,
+        port_winbox: &'static str,
+        port_api: &'static str,
+        port_ftp: &'static str,
+        port_ssh: &'static str,
+        location: Option<&'static str>,
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+    }
+
+    let devices = vec![
+        DeviceSeed {
+            name_device: "POP-KALISARI-LOCAL",
+            host: "122.248.40.64",
+            username: "numbernine",
+            password: "1099",
+            port_winbox: "8291",
+            port_api: "2010",
+            port_ftp: "2140",
+            port_ssh: "22",
+            location: Some("-7.383717, 109.115755"),
+            latitude: Some(-7.383716525274112),
+            longitude: Some(109.11575496196747),
+        },
+        DeviceSeed {
+            name_device: "POP-GUNUNGLURAH",
+            host: "122.248.40.64",
+            username: "21sa1099",
+            password: "21sa1099",
+            port_winbox: "8291",
+            port_api: "2009",
+            port_ftp: "2140",
+            port_ssh: "22",
+            location: Some("https://maps.app.goo.gl/wU6ptu3A2hdWZQuU8"),
+            latitude: None,
+            longitude: None,
+        },
+        DeviceSeed {
+            name_device: "RO-MANAGEMENT-KBSN",
+            host: "122.248.40.64",
+            username: "21sa1099",
+            password: "21sa1099",
+            port_winbox: "8291",
+            port_api: "2012",
+            port_ftp: "2140",
+            port_ssh: "22",
+            location: Some("https://maps.app.goo.gl/wU6ptu3A2hdWZQuU8"),
+            latitude: None,
+            longitude: None,
+        },
+        DeviceSeed {
+            name_device: "POP-SUMBANG",
+            host: "122.248.40.64",
+            username: "21sa1099",
+            password: "21sa1099",
+            port_winbox: "8291",
+            port_api: "2011",
+            port_ftp: "2140",
+            port_ssh: "22",
+            location: Some("https://maps.app.goo.gl/wU6ptu3A2hdWZQuU8"),
+            latitude: None,
+            longitude: None,
+        },
+        DeviceSeed {
+            name_device: "POP-PANDANSARI",
+            host: "122.248.40.64",
+            username: "21sa1099",
+            password: "21sa1099",
+            port_winbox: "2384",
+            port_api: "8991",
+            port_ftp: "21",
+            port_ssh: "4384",
+            location: Some("-7.383717, 109.115755"),
+            latitude: Some(-7.383716525274112),
+            longitude: Some(109.11575496196747),
+        },
+    ];
+
+    for device in &devices {
+        let existing = mikrotik_clients::Entity::find()
+            .filter(mikrotik_clients::Column::NameDevice.eq(device.name_device))
+            .one(&db)
+            .await
+            .unwrap();
+
+        if existing.is_some() {
+            println!("  Device '{}' sudah ada, di-skip.", device.name_device);
+            continue;
+        }
+
+        let enc_username = encrypt(device.username, &aes_key)
+            .unwrap_or_else(|e| panic!("Gagal enkripsi username '{}': {}", device.name_device, e));
+        let enc_password = encrypt(device.password, &aes_key)
+            .unwrap_or_else(|e| panic!("Gagal enkripsi password '{}': {}", device.name_device, e));
+        let enc_port_winbox = encrypt(device.port_winbox, &aes_key)
+            .unwrap_or_else(|e| panic!("Gagal enkripsi port_winbox '{}': {}", device.name_device, e));
+        let enc_port_api = encrypt(device.port_api, &aes_key)
+            .unwrap_or_else(|e| panic!("Gagal enkripsi port_api '{}': {}", device.name_device, e));
+        let enc_port_ftp = encrypt(device.port_ftp, &aes_key)
+            .unwrap_or_else(|e| panic!("Gagal enkripsi port_ftp '{}': {}", device.name_device, e));
+        let enc_port_ssh = encrypt(device.port_ssh, &aes_key)
+            .unwrap_or_else(|e| panic!("Gagal enkripsi port_ssh '{}': {}", device.name_device, e));
+
+        let new_device = mikrotik_clients::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            name_device: Set(device.name_device.to_string()),
+            host: Set(device.host.to_string()),
+            username: Set(enc_username),
+            password: Set(enc_password),
+            port_winbox: Set(Some(enc_port_winbox)),
+            port_api: Set(Some(enc_port_api)),
+            port_ftp: Set(Some(enc_port_ftp)),
+            port_ssh: Set(Some(enc_port_ssh)),
+            location: Set(device.location.map(|s| s.to_string())),
+            latitude: Set(device.latitude.map(|v| Decimal::try_from(v).unwrap())),
+            longitude: Set(device.longitude.map(|v| Decimal::try_from(v).unwrap())),
+            timezone: Set(None),
+            created_at: Set(chrono::Utc::now().naive_utc()),
+            updated_at: Set(chrono::Utc::now().naive_utc()),
+            deleted_at: Set(None),
+            created_by: Set(user_id),
+            updated_by: Set(None),
+            deleted_by: Set(None),
+        };
+
+        new_device.insert(&db).await.unwrap();
+        println!("  ✅ Inserted device '{}'.", device.name_device);
+    }
 
     println!("\n✅ Seeding process completed successfully!");
 }

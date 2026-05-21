@@ -7,3 +7,4 @@ pub mod audit_logs;
 pub mod mikrotik_clients;
 pub mod interface_metrics;
 pub mod mikrotik_config_snapshots;
+pub mod telegram_bots;

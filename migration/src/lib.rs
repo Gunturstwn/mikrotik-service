@@ -9,6 +9,7 @@ mod m20260405_101500_create_mikrotik_clients_table;
 mod m20260406_132000_encrypt_ssh_port;
 mod m20260407_150000_create_interface_metrics;
 mod m20260407_160000_create_config_snapshots;
+mod m20260521_000001_create_telegram_bots_table;
 
 pub struct Migrator;
 
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260406_132000_encrypt_ssh_port::Migration),
             Box::new(m20260407_150000_create_interface_metrics::Migration),
             Box::new(m20260407_160000_create_config_snapshots::Migration),
+            Box::new(m20260521_000001_create_telegram_bots_table::Migration),
         ]
     }
 }

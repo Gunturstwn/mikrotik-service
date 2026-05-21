@@ -61,6 +61,12 @@ impl Modify for SecurityAddon {
         mikrotik_service::handlers::mikrotik_handler::view_config_snapshot,
         mikrotik_service::handlers::mikrotik_handler::backup_now,
         mikrotik_service::handlers::mikrotik_handler::get_config_diff,
+        mikrotik_service::handlers::telegram_handler::list_bots,
+        mikrotik_service::handlers::telegram_handler::get_bot,
+        mikrotik_service::handlers::telegram_handler::create_bot,
+        mikrotik_service::handlers::telegram_handler::update_bot,
+        mikrotik_service::handlers::telegram_handler::delete_bot,
+        mikrotik_service::handlers::telegram_handler::test_bot,
     ),
     components(
         schemas(
@@ -86,6 +92,10 @@ impl Modify for SecurityAddon {
             mikrotik_service::dto::mikrotik::MikrotikConfigSnapshotResponse,
             mikrotik_service::dto::mikrotik::MikrotikConfigViewResponse,
             mikrotik_service::dto::mikrotik::MikrotikConfigDiffResponse,
+            mikrotik_service::dto::telegram::CreateTelegramBotRequest,
+            mikrotik_service::dto::telegram::UpdateTelegramBotRequest,
+            mikrotik_service::dto::telegram::TelegramBotResponse,
+            mikrotik_service::dto::telegram::TelegramTestResponse,
         )
     ),
     modifiers(&SecurityAddon)

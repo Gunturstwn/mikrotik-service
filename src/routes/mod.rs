@@ -3,6 +3,7 @@ mod auth_routes;
 mod user_routes;
 mod export_routes;
 mod mikrotik_routes;
+mod telegram_routes;
 
 use axum::Router;
 use crate::AppState;
@@ -52,6 +53,7 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/users", user_routes::routes())
         .nest("/api/export", export_routes::routes())
         .nest("/api/mikrotik_client", mikrotik_routes::routes())
+        .nest("/api/telegram", telegram_routes::routes())
         .layer(cors)
         .with_state(state)
 }

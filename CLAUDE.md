@@ -1735,3 +1735,136 @@ fn get_jwt_secret() -> &'static str {
 ---
 
 *Dokumen ini dibuat secara otomatis berdasarkan analisis kode proyek. Update dokumen ini setiap kali ada perubahan arsitektur, API baru, atau perubahan skema database.*
+
+
+---
+
+## 14. Frontend (Vue 3 + TypeScript)
+
+Frontend terletak di folder `frontend/` dan merupakan SPA (Single Page Application) yang berkomunikasi dengan backend API.
+
+### 14.1 Tech Stack Frontend
+
+| Layer | Technology | Version |
+|-------|-----------|---------|
+| Framework | Vue 3 (Composition API + `<script setup>`) | ^3.5.13 |
+| Routing | Vue Router 4 (HTML5 History mode) | ^4.5.0 |
+| Build Tool | Vite 6 | ^6.3.5 |
+| Language | TypeScript 5.7 (strict mode) | ~5.7.0 |
+| Styling | Pure CSS + CSS Custom Properties | — |
+| Font | Inter (Google Fonts) | — |
+
+### 14.2 Struktur Frontend
+
+```
+frontend/
+├── src/
+│   ├── main.ts                 # Entry point + router setup
+│   ├── App.vue                 # Root (<RouterView />)
+│   ├── api/                    # API layer (semua HTTP calls)
+│   │   ├── auth.ts             # Login, logout, session
+│   │   ├── user.ts             # Profile CRUD, photo upload
+│   │   ├── mikrotik.ts         # MikroTik device CRUD + monitoring
+│   │   └── telegram.ts         # Telegram bot CRUD + test
+│   ├── config/
+│   │   └── company.ts          # Konten landing page (centralized)
+│   ├── components/
+│   │   ├── DashboardSidebar.vue # Sidebar navigasi dashboard
+│   │   ├── AppNavbar.vue       # Navbar landing page
+│   │   └── ...                 # Section components
+│   ├── pages/
+│   │   ├── LandingPage.vue     # Landing page perusahaan
+│   │   ├── LoginPage.vue       # Portal login
+│   │   ├── DashboardPage.vue   # Layout dashboard (sidebar + content)
+│   │   └── dashboard/
+│   │       ├── DashboardHome.vue   # Overview stats
+│   │       ├── ProfilePage.vue     # Profil user + edit + photo
+│   │       ├── MikrotikPage.vue    # CRUD device + resource monitor
+│   │       └── TelegramPage.vue    # CRUD bot + test send
+│   └── assets/
+│       └── main.css            # Design system (CSS variables)
+├── vite.config.ts              # Vite config + proxy
+├── package.json
+└── .gitignore                  # Exclude node_modules
+```
+
+### 14.3 Routes Frontend
+
+| Path | Component | Deskripsi |
+|------|-----------|-----------|
+| `/` | LandingPage | Landing page perusahaan |
+| `/login` | LoginPage | Portal login |
+| `/dashboard` | DashboardPage > DashboardHome | Overview |
+| `/dashboard/profile` | DashboardPage > ProfilePage | Profil user |
+| `/dashboard/mikrotik` | DashboardPage > MikrotikPage | Perangkat MikroTik |
+| `/dashboard/telegram` | DashboardPage > TelegramPage | Bot Telegram |
+
+### 14.4 Menjalankan Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev      # Dev server di http://localhost:5173
+npm run build    # Production build ke dist/
+```
+
+### 14.5 Aturan Sinkronisasi Frontend ↔ Backend
+
+**SETIAP KALI ada perubahan fitur di backend, frontend WAJIB diupdate:**
+
+1. **Endpoint baru** → Buat file API baru di `frontend/src/api/` atau tambahkan function ke file existing
+2. **DTO berubah** → Update TypeScript interface di file API yang sesuai
+3. **Route baru** → Tambahkan route di `frontend/src/main.ts`
+4. **Fitur baru** → Buat page baru di `frontend/src/pages/dashboard/`
+5. **Sidebar** → Tambahkan menu di `frontend/src/components/DashboardSidebar.vue`
+6. **Build test** → Jalankan `npm run build` untuk memastikan TypeScript valid
+
+### 14.6 Konvensi Frontend
+
+- Semua API calls melalui `src/api/` — tidak ada fetch langsung di komponen
+- Token disimpan di `sessionStorage` (tab-scoped, lebih aman dari localStorage)
+- Vite proxy aktif: `/api` → backend, `/mikrotik-images` → MinIO
+- Dark theme only, CSS Custom Properties, `<style scoped>`
+- Komponen menggunakan Composition API + `<script setup lang="ts">`
+
+---
+
+## 15. Telegram Bot Integration
+
+### 15.1 Tabel `telegram_bots`
+
+```sql
+CREATE TABLE telegram_bots (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        VARCHAR NOT NULL,
+    token       VARCHAR NOT NULL,       -- Bot token dari @BotFather
+    chat_id     VARCHAR NOT NULL,       -- Target chat/group ID
+    is_active   BOOLEAN NOT NULL DEFAULT true,
+    description TEXT,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at  TIMESTAMP,              -- Soft delete
+    created_by  UUID NOT NULL REFERENCES users(id),
+    updated_by  UUID REFERENCES users(id)
+);
+```
+
+### 15.2 Endpoints (Super Admin Only)
+
+| Method | Path | Deskripsi |
+|--------|------|-----------|
+| GET | `/api/telegram` | List semua bot |
+| POST | `/api/telegram` | Tambah bot baru |
+| GET | `/api/telegram/:id` | Detail bot |
+| PUT | `/api/telegram/:id` | Update bot |
+| DELETE | `/api/telegram/:id` | Soft delete bot |
+| POST | `/api/telegram/:id/test` | Test kirim pesan |
+
+### 15.3 Penggunaan dari Service Lain
+
+```rust
+// Kirim notifikasi dari service manapun:
+TelegramService::send_message(&db, bot_id, "⚠️ Alert: Device offline!").await?;
+```
+
+Token bot di-mask di response API (hanya 8 karakter terakhir ditampilkan).
