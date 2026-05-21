@@ -147,7 +147,10 @@ pub async fn upload_photo(
     let ip = extract_ip(&headers);
     let mut photo_bytes = Vec::new();
 
-    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+    // Issue fix #7: Gunakan proper error propagation, bukan unwrap_or(None) yang swallow error
+    while let Some(field) = multipart.next_field().await
+        .map_err(|e| AppError::BadRequest(format!("Multipart field error: {}", e)))?
+    {
         let name = field.name().unwrap_or("").to_string();
         if name == "file" || name == "photo" {
             let data = field.bytes().await.map_err(|e| AppError::BadRequest(format!("Failed to read file: {}", e)))?;
@@ -334,8 +337,9 @@ pub async fn update_user(
     multipart: axum::extract::Multipart,
 ) -> Result<Json<UserProfileResponse>, AppError> {
     let ip = extract_ip(&headers);
-    let req = parse_multipart_update(multipart, &state.storage).await?;
 
+    // Bug fix #3: Cek role SEBELUM memproses multipart/upload foto ke storage
+    // Mencegah non-admin men-trigger upload ke MinIO lalu mendapat 403
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
             &state.db, Some(user_ctx.user_id),
@@ -345,6 +349,7 @@ pub async fn update_user(
         return Err(AppError::Forbidden("Super Admin role required".to_string()));
     }
 
+    let req = parse_multipart_update(multipart, &state.storage).await?;
     let res = UserService::update_profile(&state.db, id, req).await?;
 
     let _ = AuditService::log(

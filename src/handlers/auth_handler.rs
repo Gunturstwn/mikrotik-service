@@ -1,4 +1,4 @@
-use axum::{extract::{State, Query}, Json};
+use axum::{extract::{State, Query}, Json, http::StatusCode};
 use crate::dto::auth::{RegisterRequest, LoginRequest, AuthResponse, ForgotPasswordRequest, ResetPasswordRequest, VerifyTokenResponse, LoginStatusResponse};
 use crate::services::auth_service::AuthService;
 use crate::services::audit::AuditService;
@@ -7,7 +7,6 @@ use crate::AppState;
 use crate::errors::app_error::AppError;
 use crate::utils::ip::extract_ip_from_headers;
 use validator::Validate;
-
 
 
 #[utoipa::path(
@@ -27,7 +26,7 @@ pub async fn register(
     headers: axum::http::HeaderMap,
     user_ctx: UserContext,
     mut multipart: axum::extract::Multipart,
-) -> Result<Json<AuthResponse>, AppError> {
+) -> Result<(StatusCode, Json<AuthResponse>), AppError> {
     let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
@@ -74,17 +73,10 @@ pub async fn register(
         }
     }
 
-    // Validate required fields
+    // Validate required fields presence
     let name = name.ok_or_else(|| AppError::BadRequest("Field 'name' is required".to_string()))?;
     let email = email.ok_or_else(|| AppError::BadRequest("Field 'email' is required".to_string()))?;
     let password = password.ok_or_else(|| AppError::BadRequest("Field 'password' is required".to_string()))?;
-
-    if name.len() < 3 || name.len() > 50 {
-        return Err(AppError::BadRequest("Name must be between 3 and 50 characters".to_string()));
-    }
-    if password.len() < 6 {
-        return Err(AppError::BadRequest("Password must be at least 6 characters".to_string()));
-    }
 
     // Upload photo to MinIO if provided
     let photo_url = if let Some(bytes) = photo_bytes {
@@ -99,7 +91,6 @@ pub async fn register(
         None
     };
 
-
     let req = RegisterRequest {
         name,
         email: email.clone(),
@@ -113,6 +104,9 @@ pub async fn register(
         role,
     };
 
+    // Bug fix #4: Andalkan req.validate() sepenuhnya — validasi manual duplikat sudah dihapus.
+    // RegisterRequest sudah memiliki #[validate] pada name (length 3-50), email (format),
+    // dan password (length min 6) via derive(Validate).
     if let Err(e) = req.validate() {
         return Err(AppError::BadRequest(e.to_string()));
     }
@@ -124,7 +118,8 @@ pub async fn register(
                 "USER_REGISTER_SUCCESS", "POST", "/api/auth/register", 201, &ip,
                 Some(serde_json::json!({"registered_email": email})),
             ).await;
-            Ok(Json(res))
+            // Bug fix #3: Return 201 Created (bukan 200 OK) sesuai HTTP semantics dan Swagger docs
+            Ok((StatusCode::CREATED, Json(res)))
         }
         Err(e) => {
             let _ = AuditService::log(

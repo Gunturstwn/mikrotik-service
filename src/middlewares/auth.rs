@@ -39,6 +39,11 @@ impl FromRequestParts<AppState> for UserContext {
 
         let user = user_opt.ok_or_else(|| AppError::Unauthorized("User no longer exists".to_string()))?;
 
+        // Bug fix #1: Pastikan user yang sudah di-soft-delete tidak bisa akses API
+        if user.deleted_at.is_some() {
+            return Err(AppError::Unauthorized("Account has been deleted".to_string()));
+        }
+
         if !user.is_verified {
             return Err(AppError::Forbidden("Account is no longer verified".to_string()));
         }

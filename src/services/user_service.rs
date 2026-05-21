@@ -6,6 +6,7 @@ use sea_orm::*;
 use sea_orm::prelude::Decimal;
 use uuid::Uuid;
 use chrono::Utc;
+use std::collections::HashMap;
 
 pub struct UserService;
 
@@ -38,10 +39,11 @@ impl UserService {
         user_id: Uuid,
         req: UpdateUserRequest,
     ) -> Result<UserProfileResponse, AppError> {
+        // Issue fix #5: Gunakan NotFound (404) bukan BadRequest (400) untuk "user not found"
         let mut user: UserActiveModel = User::find_by_id(user_id)
             .one(db)
             .await?
-            .ok_or_else(|| AppError::BadRequest("User not found".to_string()))?
+            .ok_or_else(|| AppError::NotFound("User not found".to_string()))?
             .into();
 
         if let Some(name) = req.name {
@@ -97,9 +99,54 @@ impl UserService {
         let total = paginator.num_items().await?;
         let users = paginator.fetch_page(page - 1).await?;
 
+        // Issue fix #4: Eliminasi N+1 query — batch load semua roles sekaligus
+        // Sebelumnya: 2 query DB per user dalam loop → untuk 10 user = 20+ query
+        // Sekarang: cukup 2 query total untuk semua user
+        let user_ids: Vec<Uuid> = users.iter().map(|u| u.id.into()).collect();
+
+        // Batch query semua user_roles
+        let all_user_roles = user_roles::Entity::find()
+            .filter(user_roles::Column::UserId.is_in(user_ids))
+            .all(db)
+            .await?;
+
+        // Kumpulkan semua role_id unik
+        let all_role_ids: Vec<Uuid> = all_user_roles.iter().map(|ur| ur.role_id.into()).collect();
+
+        // Batch query semua roles
+        let all_roles = if all_role_ids.is_empty() {
+            vec![]
+        } else {
+            roles::Entity::find()
+                .filter(roles::Column::Id.is_in(all_role_ids))
+                .all(db)
+                .await?
+        };
+
+        // Build lookup map: role_id → role_name
+        let role_map: HashMap<Uuid, String> = all_roles.into_iter()
+            .map(|r| (r.id.into(), r.name))
+            .collect();
+
+        // Build lookup map: user_id → Vec<role_name>
+        let mut user_roles_map: HashMap<Uuid, Vec<String>> = HashMap::new();
+        for ur in all_user_roles {
+            let user_id_key: Uuid = ur.user_id.into();
+            let role_id_key: Uuid = ur.role_id.into();
+            if let Some(role_name) = role_map.get(&role_id_key) {
+                user_roles_map
+                    .entry(user_id_key)
+                    .or_insert_with(Vec::new)
+                    .push(role_name.clone());
+            }
+        }
+
         let mut items = Vec::new();
         for user in users {
-            let user_role_names = Self::resolve_roles(db, user.id.into()).await?;
+            let user_id_key: Uuid = user.id.into();
+            // Issue fix #8: Kembalikan vec kosong jika tidak ada role (tidak hardcode "Customer")
+            let user_role_names = user_roles_map.get(&user_id_key).cloned().unwrap_or_default();
+
             items.push(UserProfileResponse {
                 id: user.id.into(),
                 name: user.name,
@@ -124,19 +171,25 @@ impl UserService {
     }
 
     pub async fn soft_delete(db: &DatabaseConnection, user_id: Uuid) -> Result<(), AppError> {
-        let mut user: UserActiveModel = User::find_by_id(user_id)
+        // Issue fix #5: Gunakan NotFound (404) bukan BadRequest (400)
+        let user_model = User::find_by_id(user_id)
             .one(db)
             .await?
-            .ok_or_else(|| AppError::BadRequest("User not found".to_string()))?
-            .into();
+            .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
+        // Issue fix #6: Cek apakah user sudah di-delete (idempoten)
+        if user_model.deleted_at.is_some() {
+            return Err(AppError::NotFound("User already deleted".to_string()));
+        }
+
+        let mut user: UserActiveModel = user_model.into();
         user.deleted_at = Set(Some(Utc::now().naive_utc()));
         user.update(db).await?;
 
         Ok(())
     }
 
-    /// Helper: resolve user roles from DB join
+    /// Helper: resolve user roles dari DB join (digunakan untuk get_profile & update_profile)
     async fn resolve_roles(db: &DatabaseConnection, user_id: Uuid) -> Result<Vec<String>, AppError> {
         let ur_list = user_roles::Entity::find()
             .filter(user_roles::Column::UserId.eq(user_id))
@@ -146,7 +199,9 @@ impl UserService {
         let role_ids: Vec<Uuid> = ur_list.into_iter().map(|ur| ur.role_id).collect();
 
         if role_ids.is_empty() {
-            return Ok(vec!["Customer".to_string()]);
+            // Issue fix #8: Jangan hardcode "Customer" — kembalikan vec kosong jika tidak ada role
+            tracing::warn!("User {} has no roles assigned in user_roles table", user_id);
+            return Ok(vec![]);
         }
 
         let db_roles = roles::Entity::find()

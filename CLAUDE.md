@@ -1381,6 +1381,9 @@ Request dengan "Authorization: Bearer <token>"
     │       ├─► DB: find_by_id(claims.sub) 
     │       │       → 401 jika user tidak ditemukan
     │       │
+    │       ├─► Cek deleted_at IS NULL          ← [FIXED]
+    │       │       → 401 "Account has been deleted" jika user di-soft-delete
+    │       │
     │       └─► Cek is_verified == true
     │               → 403 jika tidak terverifikasi
     │
@@ -1570,6 +1573,163 @@ curl http://localhost:5150/api/health
 curl -X POST http://localhost:5150/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"gntrstwn19x@gmail.com","password":"numbernine9"}'
+```
+
+---
+
+## 13. Known Fixes & Bugfix History
+
+Section ini mendokumentasikan bug yang telah diperbaiki agar tidak terulang.
+
+### 13.1 User CRUD Fixes (2026-05-15)
+
+#### 🔴 Fix #1 — `middlewares/auth.rs`: Soft-deleted user bisa akses API
+
+**Root cause:** Middleware hanya cek `is_verified`, tidak cek `deleted_at`.
+
+**Fix:** Tambahkan pengecekan `deleted_at.is_some()` sebelum `is_verified`:
+```rust
+if user.deleted_at.is_some() {
+    return Err(AppError::Unauthorized("Account has been deleted".to_string()));
+}
+```
+
+#### 🔴 Fix #3 — `handlers/user_handler.rs`: Upload ke MinIO sebelum cek role
+
+**Root cause:** Di `update_user`, `parse_multipart_update()` (yang upload foto) dipanggil sebelum validasi role Super Admin.
+
+**Fix:** Pindahkan role check ke atas, **sebelum** `parse_multipart_update()`.
+
+#### 🟠 Fix #4 — `services/user_service.rs`: N+1 Query di `find_all`
+
+**Root cause:** `resolve_roles()` dipanggil per-user dalam loop → 2 query DB × N user.
+
+**Fix:** Refactor `find_all` menggunakan batch query:
+- 1 query untuk semua `user_roles` (filter `UserId.is_in(user_ids)`)
+- 1 query untuk semua `roles` (filter `Id.is_in(all_role_ids)`)
+- Build `HashMap<Uuid, Vec<String>>` untuk assign roles ke masing-masing user
+- **Total: 2 query untuk semua user**, berapapun jumlahnya
+
+#### 🟡 Fix #5 — `services/user_service.rs`: Error type salah (BadRequest vs NotFound)
+
+**Root cause:** `update_profile` dan `soft_delete` menggunakan `AppError::BadRequest` untuk "User not found" — semantik HTTP yang salah (400 vs 404).
+
+**Fix:** Ganti ke `AppError::NotFound`.
+
+#### 🟡 Fix #6 — `services/user_service.rs`: Double-delete tidak terdeteksi
+
+**Root cause:** `soft_delete` tidak cek apakah `deleted_at` sudah terisi, sehingga delete berulang selalu return 200.
+
+**Fix:** Tambahkan cek `if user_model.deleted_at.is_some()` → return `AppError::NotFound`.
+
+#### 🟡 Fix #7 — `handlers/user_handler.rs`: Error multipart di-swallow diam-diam
+
+**Root cause:** `upload_photo` menggunakan `.unwrap_or(None)` pada `next_field().await`, menyebabkan error koneksi/payload corrupt diabaikan.
+
+**Fix:** Ganti ke `.map_err(|e| AppError::BadRequest(...))?` agar error di-propagate dengan benar.
+
+#### 🟡 Fix #8 — `services/user_service.rs`: Hardcode fallback role `"Customer"`
+
+**Root cause:** `resolve_roles` otomatis return `vec!["Customer"]` jika user tidak punya entry di `user_roles` — inkonsisten dengan data DB.
+
+**Fix:** Return `vec![]` (kosong) dan log `tracing::warn!`. Ini lebih honest — jika user tidak punya role, jangan asumsikan rolenya.
+
+#### 🟡 Fix #2 — `routes/user_routes.rs`: Route definition tidak idiomatis
+
+**Root cause:** Route `/me` dan `/:id` didefinisikan terpisah per-method, berpotensi conflict di Axum 0.7.
+
+**Fix:** Gabungkan method routing dengan chaining:
+```rust
+.route("/me", get(get_me).put(update_me))
+.route("/:id", get(get_user).put(update_user).delete(delete_user))
+```
+
+---
+
+### 13.2 Auth Fixes (2026-05-16)
+
+#### 🔴 Fix #1 — `services/auth_service.rs`: Register tanpa DB Transaction
+
+**Root cause:** `user.insert()` dan `user_role.insert()` dijalankan tanpa transaksi. Jika insert role gagal, user terbuat di DB tapi tanpa role → data corrupt permanen.
+
+**Fix:** Bungkus dengan SeaORM transaction:
+```rust
+let txn = db.begin().await?;
+user.insert(&txn).await?;
+user_role.insert(&txn).await?;
+txn.commit().await?;  // rollback otomatis jika salah satu gagal
+```
+
+#### 🔴 Fix #2 — `services/auth_service.rs`: Soft-deleted user bisa login & dapat JWT
+
+**Root cause:** Query login tidak filter `deleted_at IS NULL`, sehingga user yang di-soft-delete masih bisa login.
+
+**Fix:** Tambahkan filter di query login:
+```rust
+.filter(crate::models::users::Column::DeletedAt.is_null())
+```
+
+#### 🟠 Fix #3 — `handlers/auth_handler.rs`: Register response HTTP 200 bukan 201
+
+**Root cause:** `Ok(Json(res))` default ke 200 OK, padahal Swagger docs mendefinisikan 201 Created.
+
+**Fix:** Return tuple `(StatusCode::CREATED, Json(res))`.
+
+#### 🟠 Fix #4 — `handlers/auth_handler.rs`: Validasi duplikat di register
+
+**Root cause:** Validasi `name` (len 3-50) dan `password` (len min 6) dilakukan dua kali: manual di handler dan via `req.validate()`.
+
+**Fix:** Hapus validasi manual, andalkan sepenuhnya `req.validate()` yang sudah menggunakan `#[validate(length(...))]` di DTO.
+
+#### 🟠 Fix #5 — `services/auth_service.rs`: Hardcode fallback "Customer" di login
+
+**Root cause:** Sama seperti fix di `user_service.rs` — jika user tidak punya role, JWT diisi `["Customer"]` secara palsu.
+
+**Fix:** Hapus fallback, return roles sesuai data DB. Jika kosong, log `tracing::warn!`.
+
+#### 🟡 Fix #6 — `services/auth_service.rs`: `verify_email` tidak validasi state
+
+**Root cause:** Bisa memverifikasi user yang sudah deleted, dan re-verifikasi user yang sudah verified.
+
+**Fix:** Tambahkan pengecekan `deleted_at.is_some()` dan `is_verified` sebelum update.
+
+#### 🟡 Fix #7 — `services/auth_service.rs`: `forgot/reset_password` tidak cek `deleted_at`
+
+**Root cause:** User yang di-soft-delete bisa request reset password dan berhasil (mengaktifkan akun kembali secara tidak langsung).
+
+**Fix:** Tambahkan `.filter(Column::DeletedAt.is_null())` pada query di `forgot_password`. Pada `reset_password`, cek `user.deleted_at.is_some()` setelah lookup, dan hapus token Redis jika user sudah deleted.
+
+#### 🟡 Fix #8 — `dto/auth.rs`: Tidak ada validasi panjang password di `LoginRequest`
+
+**Root cause:** `password` field di `LoginRequest` tidak punya `#[validate]`, sehingga string kosong bisa lolos.
+
+**Fix:**
+```rust
+#[validate(length(min = 1, message = "Password cannot be empty"))]
+pub password: String,
+```
+
+#### 🟡 Fix #9 — `dto/auth.rs`: Tidak ada validasi format token di `ResetPasswordRequest`
+
+**Root cause:** `token` field menerima string apapun tanpa validasi panjang/format.
+
+**Fix:**
+```rust
+#[validate(length(min = 36, max = 36, message = "Invalid token format (must be a valid UUID)"))]
+pub token: String,
+```
+
+#### 🟡 Fix #10 — `config/auth.rs`: JWT_SECRET dibaca dari env setiap request
+
+**Root cause:** `env::var("JWT_SECRET")` dipanggil di setiap `create_token()` dan `verify_token()` — syscall yang tidak perlu.
+
+**Fix:** Cache menggunakan `std::sync::OnceLock`:
+```rust
+static JWT_SECRET_CACHE: OnceLock<String> = OnceLock::new();
+
+fn get_jwt_secret() -> &'static str {
+    JWT_SECRET_CACHE.get_or_init(|| env::var("JWT_SECRET").expect("JWT_SECRET must be set"))
+}
 ```
 
 ---

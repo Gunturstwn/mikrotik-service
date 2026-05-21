@@ -53,8 +53,12 @@ pub struct LoginRequest {
     #[validate(email)]
     #[schema(example = "customer@mnet.com")]
     pub email: String,
+
+    // Issue fix #8: Tambah validasi panjang password — tidak boleh kosong
+    #[validate(length(min = 1, message = "Password cannot be empty"))]
     #[schema(example = "secure_password_123")]
     pub password: String,
+
     /// Cloudflare Turnstile token. Required if the system detects suspicious login failure patterns.
     #[schema(example = "1x0.0.0.0...", nullable = true)]
     pub captcha_token: Option<String>,
@@ -82,8 +86,12 @@ pub struct ResetPasswordRequest {
     #[validate(email)]
     #[schema(example = "customer@mnet.com")]
     pub email: String,
+
+    // Issue fix #9: Tambah validasi format token (UUID = 36 karakter)
+    #[validate(length(min = 36, max = 36, message = "Invalid token format (must be a valid UUID)"))]
     #[schema(example = "550e8400-e29b-41d4-a716-446655440000")]
     pub token: String,
+
     #[validate(length(min = 6))]
     #[schema(example = "new_secure_password_456")]
     pub new_password: String,

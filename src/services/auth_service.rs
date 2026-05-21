@@ -20,13 +20,17 @@ impl AuthService {
         let user_id = Uuid::new_v4();
 
         // 1. Resolve role (default to "Customer" if none specified)
-        let role_name = req.role.unwrap_or_else(|| "Customer".to_string());
-        
+        let role_name = req.role.clone().unwrap_or_else(|| "Customer".to_string());
+
         let role = roles::Entity::find()
             .filter(roles::Column::Name.eq(&role_name))
             .one(db)
             .await?
             .ok_or_else(|| AppError::BadRequest(format!("Role '{}' not found", role_name)))?;
+
+        // Bug fix #1: Gunakan DB transaction agar user dan user_role insert bersifat atomic.
+        // Jika salah satu gagal, keduanya di-rollback → tidak ada user tanpa role.
+        let txn = db.begin().await?;
 
         // 2. Create the user
         let user = UserActiveModel {
@@ -34,19 +38,19 @@ impl AuthService {
             name: Set(req.name.clone()),
             email: Set(req.email.clone()),
             password: Set(password_hash),
-            phone: Set(req.phone),
-            address: Set(req.address),
-            photo: Set(req.photo),
+            phone: Set(req.phone.clone()),
+            address: Set(req.address.clone()),
+            photo: Set(req.photo.clone()),
             lat: Set(req.lat.map(|v| v.to_string().parse::<Decimal>().unwrap_or_default())),
             lng: Set(req.lng.map(|v| v.to_string().parse::<Decimal>().unwrap_or_default())),
-            payment_token: Set(req.payment_token),
+            payment_token: Set(req.payment_token.clone()),
             is_verified: Set(false),
             created_at: Set(Utc::now().naive_utc()),
             updated_at: Set(Utc::now().naive_utc()),
             ..Default::default()
         };
 
-        user.insert(db).await.map_err(|e| {
+        user.insert(&txn).await.map_err(|e| {
             if e.to_string().contains("duplicate key") {
                 AppError::BadRequest("Email already exists".to_string())
             } else {
@@ -54,21 +58,24 @@ impl AuthService {
             }
         })?;
 
-        // 3. Link user to role
+        // 3. Link user to role (dalam transaksi yang sama)
         let user_role = user_roles::ActiveModel {
             user_id: Set(user_id.into()),
             role_id: Set(role.id),
             ..Default::default()
         };
-        user_role.insert(db).await?;
+        user_role.insert(&txn).await?;
 
-        // 4. Trigger Email Notification via RabbitMQ
+        // Commit transaksi — keduanya berhasil
+        txn.commit().await?;
+
+        // 4. Trigger Email Notification via RabbitMQ (di luar transaksi, non-critical)
         let email_payload = serde_json::json!({
             "to": req.email,
             "subject": "Welcome to MikroTik Billing!",
             "body": format!("Hello {},\n\nYour account has been created with the role '{}'.\nPlease verify your email.", req.name, role_name)
         });
-        
+
         if let Err(e) = rabbit.publish("email_queue", &email_payload.to_string()).await {
             tracing::error!("Failed to publish welcome email for {}: {}", req.email, e);
         }
@@ -102,7 +109,7 @@ impl AuthService {
                 let token = req.captcha_token.as_deref().ok_or_else(|| {
                     AppError::BadRequest("CAPTCHA required for this login attempt".to_string())
                 })?;
-                
+
                 if !captcha.verify(token, Some(ip)).await? {
                     return Err(AppError::BadRequest("Invalid CAPTCHA verification".to_string()));
                 }
@@ -111,9 +118,11 @@ impl AuthService {
             SecurityStatus::Allowed => {}
         }
 
-        // 2. Find User
+        // 2. Find User — Bug fix #2: filter deleted_at IS NULL
+        // Soft-deleted user tidak boleh mendapatkan JWT token baru
         let user = User::find()
             .filter(crate::models::users::Column::Email.eq(&email))
+            .filter(crate::models::users::Column::DeletedAt.is_null())
             .one(db)
             .await?;
 
@@ -151,16 +160,18 @@ impl AuthService {
             .await?;
 
         let role_ids: Vec<Uuid> = user_roles_mapped.into_iter().map(|ur| ur.role_id).collect();
-        
+
         let db_roles = roles::Entity::find()
             .filter(roles::Column::Id.is_in(role_ids))
             .all(db)
             .await?;
 
-        let mut token_roles: Vec<String> = db_roles.into_iter().map(|r| r.name).collect();
-        
+        // Bug fix #5: Hapus hardcode fallback "Customer" — konsisten dengan fix di user_service.rs
+        // JWT akan berisi roles sesuai data DB. Jika kosong, log warning.
+        let token_roles: Vec<String> = db_roles.into_iter().map(|r| r.name).collect();
+
         if token_roles.is_empty() {
-            token_roles.push("Customer".to_string());
+            tracing::warn!("User {} has no roles assigned, issuing token with empty roles", user.id);
         }
 
         let token = create_token(user.id.into(), token_roles)?;
@@ -190,12 +201,22 @@ impl AuthService {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
+        // Issue fix #6: Jangan verifikasi user yang sudah di-soft-delete
+        if user.deleted_at.is_some() {
+            return Err(AppError::NotFound("User not found".to_string()));
+        }
+
+        // Issue fix #6: Cek apakah sudah verified agar tidak redundan
+        if user.is_verified {
+            return Err(AppError::BadRequest("User email is already verified".to_string()));
+        }
+
         let mut user_active: UserActiveModel = user.into();
         user_active.is_verified = Set(true);
         user_active.updated_at = Set(Utc::now().naive_utc());
-        
+
         user_active.update(db).await?;
-        
+
         Ok(())
     }
 
@@ -205,9 +226,10 @@ impl AuthService {
         rabbit: &crate::queue::rabbitmq_client::RabbitMQClient,
         req: ForgotPasswordRequest,
     ) -> Result<(), AppError> {
-        // 1. Find the user by email
+        // 1. Find the user by email — Issue fix #7: filter deleted_at IS NULL
         let user = User::find()
             .filter(crate::models::users::Column::Email.eq(&req.email))
+            .filter(crate::models::users::Column::DeletedAt.is_null())
             .one(db)
             .await?;
 
@@ -215,7 +237,7 @@ impl AuthService {
         let user = match user {
             Some(u) => u,
             None => {
-                info!("Forgot password for non-existent email: {}", req.email);
+                info!("Forgot password for non-existent or deleted email: {}", req.email);
                 return Ok(());
             }
         };
@@ -262,11 +284,18 @@ impl AuthService {
         let user_id: Uuid = user_id_str.parse()
             .map_err(|_| AppError::InternalServerError("Corrupted reset token data".to_string()))?;
 
-        // 2. Find user and verify email
+        // 2. Find user — Issue fix #7: filter deleted_at IS NULL
+        // User yang sudah deleted tidak boleh reset password (mencegah reaktivasi akun)
         let user = User::find_by_id(user_id)
             .one(db)
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+        if user.deleted_at.is_some() {
+            // Hapus token dari Redis untuk cleanup
+            let _ = redis.del(&redis_key).await;
+            return Err(AppError::NotFound("User not found".to_string()));
+        }
 
         if user.email != req.email {
             return Err(AppError::BadRequest("Email and token do not match".to_string()));
