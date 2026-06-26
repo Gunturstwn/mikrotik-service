@@ -764,11 +764,14 @@ pub async fn trigger_backup_handler(
 pub struct BackupLogQuery {
     pub page: Option<u64>,
     pub page_size: Option<u64>,
+    /// Filter by device UUID (from metadata JSONB)
+    pub device_id: Option<Uuid>,
 }
 
 /// List backup activity logs (from audit_logs filtered by MIKROTIK_BACKUP_SEND).
 ///
 /// Returns enriched data with device names and bot names.
+/// Optional device_id filter to scope logs to a specific MikroTik device.
 #[utoipa::path(
     get,
     path = "/api/mikrotik_client/backup-logs",
@@ -779,6 +782,7 @@ pub struct BackupLogQuery {
     params(
         ("page" = Option<u64>, Query, description = "Page number (1-based)"),
         ("page_size" = Option<u64>, Query, description = "Items per page (max 100)"),
+        ("device_id" = Option<Uuid>, Query, description = "Filter by device UUID (from metadata JSONB)"),
     ),
     security(("bearer_auth" = [])),
     tag = "MikroTik Backup"
@@ -792,7 +796,7 @@ pub async fn list_backup_logs_handler(
     use crate::models::audit_logs::Entity as AuditLogEntity;
     use crate::models::mikrotik_clients::Entity as MikrotikClientEntity;
     use crate::models::telegram_bots::Entity as TelegramBotEntity;
-    use sea_orm::*;
+    use sea_orm::{*, sea_query::Expr};
     use std::collections::HashMap;
 
     let ip = extract_ip_from_headers(&headers);
@@ -800,7 +804,15 @@ pub async fn list_backup_logs_handler(
     let page_size = params.page_size.unwrap_or(20).clamp(1, 100);
 
     // Filter by backup send action
-    let condition = crate::models::audit_logs::Column::Action.eq("MIKROTIK_BACKUP_SEND");
+    let mut condition = Condition::all()
+        .add(crate::models::audit_logs::Column::Action.eq("MIKROTIK_BACKUP_SEND"));
+
+    // Optional filter by device_id from metadata JSONB
+    if let Some(did) = params.device_id {
+        condition = condition.add(
+            Expr::cust(format!("metadata->>'device_id' = '{}'", did))
+        );
+    }
 
     let total = AuditLogEntity::find()
         .filter(condition.clone())

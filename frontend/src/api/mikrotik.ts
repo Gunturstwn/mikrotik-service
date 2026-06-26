@@ -269,8 +269,10 @@ export interface BackupLogListResponse {
   total_pages: number
 }
 
-export async function listBackupLogs(page = 1, pageSize = 20): Promise<BackupLogListResponse> {
-  const res = await fetch(`${BASE_URL}/api/mikrotik_client/backup-logs?page=${page}&page_size=${pageSize}`, {
+export async function listBackupLogs(page = 1, pageSize = 20, deviceId?: string): Promise<BackupLogListResponse> {
+  let url = `${BASE_URL}/api/mikrotik_client/backup-logs?page=${page}&page_size=${pageSize}`
+  if (deviceId) { url += `&device_id=${encodeURIComponent(deviceId)}` }
+  const res = await fetch(url, {
     headers: authHeaders(),
     credentials: 'include',
   })
