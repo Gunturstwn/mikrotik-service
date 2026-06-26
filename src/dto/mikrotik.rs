@@ -1,22 +1,27 @@
 use serde::{Deserialize, Serialize};
+use validator::Validate;
 use utoipa::ToSchema;
 use uuid::Uuid;
 use chrono::NaiveDateTime;
 use sea_orm::prelude::Decimal;
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
 pub struct MikrotikClientRequest {
     /// Friendly name for the MikroTik device
-    #[schema(example = "Core Router HQ")]
+    #[validate(length(min = 1, max = 100, message = "name_device must be between 1 and 100 characters"))]
+    #[schema(example = "Core Router HQ", min_length = 1, max_length = 100)]
     pub name_device: String,
     /// Hostname or IP address of the device
-    #[schema(example = "192.168.1.1")]
+    #[validate(length(min = 1, max = 255, message = "host must be between 1 and 255 characters"))]
+    #[schema(example = "192.168.1.1", min_length = 1, max_length = 255)]
     pub host: String,
     /// RouterOS username (will be encrypted at rest)
-    #[schema(example = "admin")]
+    #[validate(length(min = 1, max = 100, message = "username must be between 1 and 100 characters"))]
+    #[schema(example = "admin", min_length = 1, max_length = 100)]
     pub username: String,
     /// RouterOS password (will be encrypted at rest)
-    #[schema(example = "p@ssw0rd123")]
+    #[validate(length(min = 1, max = 255, message = "password must be between 1 and 255 characters"))]
+    #[schema(example = "p@ssw0rd123", min_length = 1, max_length = 255)]
     pub password: String,
     /// Optional Winbox port (encrypted at rest)
     #[schema(example = "8291")]
@@ -36,6 +41,8 @@ pub struct MikrotikClientRequest {
     pub latitude: Option<Decimal>,
     pub longitude: Option<Decimal>,
     pub timezone: Option<String>,
+    /// Default Telegram bot ID for notifications/backups
+    pub telegram_bot_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -54,7 +61,11 @@ pub struct MikrotikClientResponse {
     pub latitude: Option<Decimal>,
     pub longitude: Option<Decimal>,
     pub timezone: Option<String>,
+    /// Default Telegram bot ID for this device
+    pub telegram_bot_id: Option<Uuid>,
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
     pub created_at: NaiveDateTime,
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
     pub updated_at: NaiveDateTime,
     /// UUID of the user who registered the device
     pub created_by: Uuid,
@@ -141,6 +152,7 @@ pub struct MikrotikTorchResponse {
 pub struct MikrotikConfigSnapshotResponse {
     pub id: Uuid,
     pub config_hash: String,
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
     pub created_at: NaiveDateTime,
 }
 
@@ -148,7 +160,90 @@ pub struct MikrotikConfigSnapshotResponse {
 pub struct MikrotikConfigViewResponse {
     pub id: Uuid,
     pub config_content: String,
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
     pub created_at: NaiveDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub enum BackupFormat {
+    #[serde(rename = "backup")]
+    Backup,
+    #[serde(rename = "rsc")]
+    Rsc,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BackupCreateRequest {
+    /// Backup filename (without extension, default: [identity]-[date]-[time])
+    #[schema(example = "pre-upgrade-backup", max_length = 200)]
+    pub name: Option<String>,
+    /// Password for encrypted backup (only for .backup format)
+    #[schema(example = "backup-pass-123")]
+    pub password: Option<String>,
+    /// Backup format: "backup" (binary .backup) or "rsc" (text export .rsc)
+    #[schema(example = "backup")]
+    pub format: Option<BackupFormat>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BackupFileResponse {
+    pub name: String,
+    pub size: i64,
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
+    pub creation_time: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BackupAndSendRequest {
+    /// Backup filename (without extension)
+    #[schema(example = "pre-upgrade-backup", max_length = 200)]
+    pub name: Option<String>,
+    /// Password for encrypted backup (only for .backup format)
+    #[schema(example = "backup-pass-123")]
+    pub password: Option<String>,
+    /// Backup format: "backup" (binary .backup) or "rsc" (text export .rsc)
+    #[schema(example = "backup")]
+    pub format: Option<BackupFormat>,
+    /// Telegram bot ID to send the backup to
+    pub telegram_bot_id: Uuid,
+    /// Whether to delete the backup file from device after successful send
+    #[schema(example = true)]
+    pub delete_after_send: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BackupAndSendResponse {
+    pub filename: String,
+    pub format: String,
+    pub telegram_bot_id: Uuid,
+    pub telegram_success: bool,
+    pub telegram_message: Option<String>,
+    pub deleted_from_device: bool,
+}
+
+/// Backup activity log entry (enriched from audit_logs)
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct BackupLogResponse {
+    pub id: Uuid,
+    pub device_name: String,
+    pub device_host: String,
+    pub filename: String,
+    pub format: Option<String>,
+    pub telegram_bot_name: Option<String>,
+    pub telegram_success: bool,
+    pub deleted_from_device: bool,
+    pub user_name: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
+/// Paginated list response for backup logs
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct BackupLogListResponse {
+    pub items: Vec<BackupLogResponse>,
+    pub total: u64,
+    pub page: u64,
+    pub page_size: u64,
+    pub total_pages: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]

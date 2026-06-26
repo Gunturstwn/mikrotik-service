@@ -10,16 +10,17 @@ pub struct Model {
     pub id: Uuid,
     pub name_device: String,
     pub host: String,
-    pub username: String, // Encrypted
-    pub password: String, // Encrypted
-    pub port_winbox: Option<String>, // Encrypted
-    pub port_api: Option<String>, // Encrypted
-    pub port_ftp: Option<String>, // Encrypted
-    pub port_ssh: Option<String>, // Encrypted
+    pub username: String,
+    pub password: String,
+    pub port_winbox: Option<String>,
+    pub port_api: Option<String>,
+    pub port_ftp: Option<String>,
+    pub port_ssh: Option<String>,
     pub location: Option<String>,
     pub latitude: Option<Decimal>,
     pub longitude: Option<Decimal>,
     pub timezone: Option<String>,
+    pub telegram_bot_id: Option<Uuid>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub deleted_at: Option<DateTime>,
@@ -54,6 +55,14 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     DeletedBy,
+    #[sea_orm(
+        belongs_to = "super::telegram_bots::Entity",
+        from = "Column::TelegramBotId",
+        to = "super::telegram_bots::Column::Id",
+        on_update = "NoAction",
+        on_delete = "NoAction"
+    )]
+    TelegramBot,
 }
 
 impl Related<super::users::Entity> for Entity {

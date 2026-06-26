@@ -23,12 +23,7 @@ impl MetricsWorker {
         tracing::info!("MetricsWorker: Monitoring started with interval {}s", interval_secs);
 
         loop {
-            let aes_key = std::env::var("AES_KEY").unwrap_or_default();
-            if aes_key.is_empty() {
-                tracing::error!("MetricsWorker: AES_KEY not set, worker sleeping for 30s...");
-                sleep(Duration::from_secs(30)).await;
-                continue;
-            }
+            let aes_key = crate::config::mikrotik::get_aes_key();
 
             match MikrotikClient::find()
                 .filter(crate::models::mikrotik_clients::Column::DeletedAt.is_null())
@@ -38,11 +33,9 @@ impl MetricsWorker {
                 Ok(clients) => {
                     for client in clients {
                         let state_clone = state.clone();
-                        let aes_key_clone = aes_key.clone();
-                        
                         tokio::spawn(async move {
                             let client_id = client.id;
-                            if let Err(e) = Self::scrape_client(&state_clone, client, &aes_key_clone).await {
+                            if let Err(e) = Self::scrape_client(&state_clone, client, aes_key).await {
                                 tracing::error!("MetricsWorker: Error scraping client {}: {}", client_id, e);
                             }
                         });
@@ -56,20 +49,18 @@ impl MetricsWorker {
     }
 
     async fn scrape_client(state: &AppState, client: ClientModel, aes_key: &str) -> Result<(), crate::errors::app_error::AppError> {
-        let system_user_id = Uuid::nil();
-        
         let interfaces = MikrotikService::get_interfaces(
             &state.db,
             &state.mikrotik_pool,
             client.id,
             aes_key,
-            Some(system_user_id)
+            None
         ).await?;
 
         // Audit log for the automated scrape
         let _ = AuditService::log(
             &state.db,
-            Some(system_user_id),
+            None,
             "MIKROTIK_METRICS_SCRAPE",
             "SYSTEM",
             "/background/metrics_worker",

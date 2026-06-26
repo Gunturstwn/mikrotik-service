@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use validator::Validate;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -55,6 +56,19 @@ pub struct UserListResponse {
     pub total: u64,
     pub page: u64,
     pub page_size: u64,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct ChangePasswordRequest {
+    /// Current password for verification
+    #[validate(length(min = 1, message = "Current password cannot be empty"))]
+    #[schema(example = "current_password_123", min_length = 1)]
+    pub current_password: String,
+
+    /// New password (min 6 characters)
+    #[validate(length(min = 6, message = "New password must be at least 6 characters"))]
+    #[schema(example = "new_secure_password_456", min_length = 6)]
+    pub new_password: String,
 }
 
 #[derive(Debug, ToSchema)]

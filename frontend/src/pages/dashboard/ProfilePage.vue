@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { authStorage } from '@/api/auth'
-import { getMyProfile, updateMyProfile, uploadMyPhoto, type UserProfileResponse, type UpdateUserRequest } from '@/api/user'
+import { getMyProfile, updateMyProfile, uploadMyPhoto, changePassword, type UserProfileResponse, type UpdateUserRequest, type ChangePasswordRequest } from '@/api/user'
 
 const router = useRouter()
 const user = ref<UserProfileResponse | null>(null)
@@ -14,6 +14,14 @@ const isSaving = ref(false)
 const saveMsg = ref('')
 const isUploadingPhoto = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+
+// Change password
+const showChangePw = ref(false)
+const pwForm = ref<ChangePasswordRequest>({ current_password: '', new_password: '' })
+const pwConfirm = ref('')
+const isChangingPw = ref(false)
+const pwError = ref('')
+const pwSuccess = ref('')
 
 const initials = computed(() => {
   if (!user.value) return '?'
@@ -77,6 +85,39 @@ const handlePhotoChange = async (event: Event) => {
     isUploadingPhoto.value = false
     ;(event.target as HTMLInputElement).value = ''
   }
+}
+
+const handleChangePw = async () => {
+  pwError.value = ''; pwSuccess.value = ''
+  if (pwForm.value.new_password.length < 6) {
+    pwError.value = 'Password baru minimal 6 karakter.'
+    return
+  }
+  if (pwForm.value.new_password !== pwConfirm.value) {
+    pwError.value = 'Konfirmasi password tidak cocok.'
+    return
+  }
+  isChangingPw.value = true
+  try {
+    await changePassword(pwForm.value)
+    pwSuccess.value = 'Password berhasil diganti.'
+    setTimeout(() => {
+      pwForm.value = { current_password: '', new_password: '' }
+      pwConfirm.value = ''
+      pwSuccess.value = ''
+      showChangePw.value = false
+    }, 2000)
+  } catch (e: any) {
+    pwError.value = e.message ?? 'Gagal mengganti password.'
+  } finally { isChangingPw.value = false }
+}
+
+const cancelChangePw = () => {
+  showChangePw.value = false
+  pwForm.value = { current_password: '', new_password: '' }
+  pwConfirm.value = ''
+  pwError.value = ''
+  pwSuccess.value = ''
 }
 
 onMounted(fetchProfile)
@@ -159,6 +200,40 @@ onMounted(fetchProfile)
           <button type="button" class="btn btn-secondary" @click="cancelEdit">Batal</button>
         </div>
       </form>
+
+      <!-- Change Password Section -->
+      <div class="pw-section">
+        <button v-if="!showChangePw" class="btn btn-secondary btn-pw" @click="showChangePw = true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          Ganti Password
+        </button>
+
+        <div v-if="showChangePw" class="pw-form">
+          <h3 class="pw-title">Ganti Password</h3>
+          <form @submit.prevent="handleChangePw">
+            <div class="form-group">
+              <label class="form-label" for="pw-current">Password Saat Ini</label>
+              <input id="pw-current" v-model="pwForm.current_password" type="password" class="form-input" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="pw-new">Password Baru</label>
+              <input id="pw-new" v-model="pwForm.new_password" type="password" class="form-input" required minlength="6" />
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="pw-confirm">Konfirmasi Password Baru</label>
+              <input id="pw-confirm" v-model="pwConfirm" type="password" class="form-input" required minlength="6" />
+            </div>
+            <div v-if="pwError" class="alert-error">{{ pwError }}</div>
+            <div v-if="pwSuccess" class="alert-success">{{ pwSuccess }}</div>
+            <div class="pw-actions">
+              <button type="submit" class="btn btn-primary" :disabled="isChangingPw">{{ isChangingPw ? 'Menyimpan...' : 'Simpan Password' }}</button>
+              <button type="button" class="btn btn-secondary" @click="cancelChangePw">Batal</button>
+            </div>
+          </form>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -194,4 +269,13 @@ onMounted(fetchProfile)
 .edit-actions { display: flex; gap: var(--space-3); }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
+
+/* Password Section */
+.pw-section { margin-top: var(--space-8); padding-top: var(--space-6); border-top: 1px solid var(--color-border); }
+.btn-pw { width: 100%; justify-content: center; }
+.pw-form { margin-top: var(--space-4); padding: var(--space-5); background: rgba(255,255,255,0.03); border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
+.pw-title { font-size: var(--font-size-base); font-weight: 700; margin-bottom: var(--space-4); }
+.alert-error { padding: var(--space-3) var(--space-4); background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25); border-radius: var(--radius-md); color: #fca5a5; font-size: var(--font-size-sm); margin-bottom: var(--space-4); }
+.alert-success { padding: var(--space-3) var(--space-4); background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25); border-radius: var(--radius-md); color: var(--color-emerald); font-size: var(--font-size-sm); margin-bottom: var(--space-4); }
+.pw-actions { display: flex; gap: var(--space-3); }
 </style>

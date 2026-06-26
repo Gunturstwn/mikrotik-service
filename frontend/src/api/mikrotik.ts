@@ -22,6 +22,7 @@ export interface MikrotikClientRequest {
   latitude?: number
   longitude?: number
   timezone?: string
+  telegram_bot_id?: string
 }
 
 export interface MikrotikClientResponse {
@@ -37,6 +38,7 @@ export interface MikrotikClientResponse {
   latitude: number | null
   longitude: number | null
   timezone: string | null
+  telegram_bot_id: string | null
   created_at: string
   updated_at: string
   created_by: string
@@ -168,4 +170,122 @@ export async function testMikrotikConnection(id: string): Promise<boolean> {
     credentials: 'include',
   })
   return res.status === 200
+}
+
+// ─── Backup Types ─────────────────────────────────────────
+
+export interface BackupCreateRequest {
+  name?: string
+  password?: string
+}
+
+export interface BackupFileResponse {
+  name: string
+  size: number
+  creation_time: string
+}
+
+export interface BackupCreateResponse {
+  filename: string
+}
+
+export type BackupFormat = 'backup' | 'rsc'
+
+export interface BackupAndSendRequest {
+  name?: string
+  password?: string
+  format?: BackupFormat
+  telegram_bot_id: string
+  delete_after_send?: boolean
+}
+
+export interface BackupAndSendResponse {
+  filename: string
+  format: string
+  telegram_bot_id: string
+  telegram_success: boolean
+  telegram_message: string | null
+  deleted_from_device: boolean
+}
+
+// ─── Backup API Functions ────────────────────────────────
+
+/** POST /api/mikrotik_client/:id/backup — Trigger binary backup */
+export async function triggerBackup(id: string, data?: BackupCreateRequest): Promise<BackupCreateResponse> {
+  const res = await fetch(`${BASE_URL}/api/mikrotik_client/${id}/backup`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(data ?? {}),
+  })
+  return handleResponse<BackupCreateResponse>(res)
+}
+
+/** POST /api/mikrotik_client/:id/backup/send — Backup & send to Telegram */
+export async function backupAndSend(id: string, data: BackupAndSendRequest): Promise<BackupAndSendResponse> {
+  const res = await fetch(`${BASE_URL}/api/mikrotik_client/${id}/backup/send`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(data),
+  })
+  return handleResponse<BackupAndSendResponse>(res)
+}
+
+/** GET /api/mikrotik_client/:id/backup/files — List backup files */
+export async function listBackupFiles(id: string): Promise<BackupFileResponse[]> {
+  const res = await fetch(`${BASE_URL}/api/mikrotik_client/${id}/backup/files`, {
+    headers: authHeaders(),
+    credentials: 'include',
+  })
+  return handleResponse<BackupFileResponse[]>(res)
+}
+
+/** GET /api/mikrotik_client/:id/backup/download?filename=... — Download backup file */
+export async function downloadBackupFileUrl(id: string, filename: string): Promise<string> {
+  // Return the URL directly for browser download
+  return `${BASE_URL}/api/mikrotik_client/${id}/backup/download?filename=${encodeURIComponent(filename)}`
+}
+
+/** GET /api/mikrotik_client/backup-logs — List backup activity logs */
+export interface BackupLogResponse {
+  id: string
+  device_name: string
+  device_host: string
+  filename: string
+  format: string | null
+  telegram_bot_name: string | null
+  telegram_success: boolean
+  deleted_from_device: boolean
+  user_name: string | null
+  created_at: string
+}
+
+export interface BackupLogListResponse {
+  items: BackupLogResponse[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export async function listBackupLogs(page = 1, pageSize = 20): Promise<BackupLogListResponse> {
+  const res = await fetch(`${BASE_URL}/api/mikrotik_client/backup-logs?page=${page}&page_size=${pageSize}`, {
+    headers: authHeaders(),
+    credentials: 'include',
+  })
+  return handleResponse<BackupLogListResponse>(res)
+}
+
+/** Download backup file as Blob for programmatic use */
+export async function downloadBackupFileBlob(id: string, filename: string): Promise<Blob> {
+  const res = await fetch(`${BASE_URL}/api/mikrotik_client/${id}/backup/download?filename=${encodeURIComponent(filename)}`, {
+    headers: authHeaders(),
+    credentials: 'include',
+  })
+  if (!res.ok) {
+    const err: ApiError = { message: `HTTP ${res.status}`, status: res.status }
+    throw err
+  }
+  return res.blob()
 }

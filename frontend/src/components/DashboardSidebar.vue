@@ -9,6 +9,10 @@ const navItems = [
   { label: 'Profil', icon: 'user', to: '/dashboard/profile' },
   { label: 'MikroTik', icon: 'router', to: '/dashboard/mikrotik' },
   { label: 'Telegram', icon: 'telegram', to: '/dashboard/telegram' },
+  { label: 'Roles', icon: 'shield', to: '/dashboard/roles' },
+  { label: 'Audit Logs', icon: 'activity', to: '/dashboard/audit-logs' },
+  { label: 'Backup Logs', icon: 'backup', to: '/dashboard/backup-logs' },
+  { label: 'Metrics', icon: 'chart', to: '/dashboard/metrics' },
 ]
 
 const isActive = (path: string) => {
@@ -46,6 +50,22 @@ const isActive = (path: string) => {
         <!-- Telegram icon -->
         <svg v-else-if="item.icon === 'telegram'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+        </svg>
+        <!-- Shield icon -->
+        <svg v-else-if="item.icon === 'shield'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <!-- Activity icon -->
+        <svg v-else-if="item.icon === 'activity'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        <!-- Backup icon -->
+        <svg v-else-if="item.icon === 'backup'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+        </svg>
+        <!-- Chart icon -->
+        <svg v-else-if="item.icon === 'chart'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
         </svg>
         <span>{{ item.label }}</span>
       </router-link>

@@ -44,7 +44,7 @@ tower = { version = "0.5.3", features = ["util"] }
 governor = "0.10.4"
 image = "0.25.10"
 bytes = "1.11.1"
-reqwest = { version = "0.13.2", features = ["form", "json", "rustls"] }
+reqwest = { version = "0.13.2", features = ["form", "json", "rustls", "multipart"] }
 async-trait = "0.1.89"
 redis = { version = "0.32", features = ["script", "tokio-comp"] }
 base64 = "0.22.1"
@@ -55,3 +55,4 @@ hex = "0.4.3"
 tokio-stream = "0.1.18"
 async-stream = "0.3.6"
 similar = "3.0.0"
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }

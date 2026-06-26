@@ -5,17 +5,8 @@ use crate::services::audit::AuditService;
 use crate::middlewares::auth::UserContext;
 use crate::AppState;
 use crate::errors::app_error::AppError;
+use crate::utils::ip::extract_ip_from_headers;
 use uuid::Uuid;
-
-/// Helper: extract client IP
-fn extract_ip(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .unwrap_or("unknown")
-        .to_string()
-}
 
 /// Macro-like check for Super Admin role
 fn require_super_admin(roles: &[String]) -> Result<(), AppError> {
@@ -43,9 +34,10 @@ pub async fn list_bots(
     user_ctx: UserContext,
 ) -> Result<Json<Vec<TelegramBotResponse>>, AppError> {
     require_super_admin(&user_ctx.roles)?;
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
-    let bots = TelegramService::list(&state.db).await?;
+    let aes_key = crate::config::mikrotik::get_aes_key();
+    let bots = TelegramService::list(&state.db, aes_key).await?;
 
     let _ = AuditService::log(
         &state.db, Some(user_ctx.user_id),
@@ -76,9 +68,10 @@ pub async fn get_bot(
     Path(id): Path<Uuid>,
 ) -> Result<Json<TelegramBotResponse>, AppError> {
     require_super_admin(&user_ctx.roles)?;
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
-    let bot = TelegramService::get_by_id(&state.db, id).await?;
+    let aes_key = crate::config::mikrotik::get_aes_key();
+    let bot = TelegramService::get_by_id(&state.db, id, aes_key).await?;
 
     let _ = AuditService::log(
         &state.db, Some(user_ctx.user_id),
@@ -109,13 +102,14 @@ pub async fn create_bot(
     Json(req): Json<CreateTelegramBotRequest>,
 ) -> Result<(StatusCode, Json<TelegramBotResponse>), AppError> {
     require_super_admin(&user_ctx.roles)?;
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if req.name.is_empty() || req.token.is_empty() || req.chat_id.is_empty() {
         return Err(AppError::BadRequest("name, token, dan chat_id wajib diisi".to_string()));
     }
 
-    let bot = TelegramService::create(&state.db, user_ctx.user_id, req).await?;
+    let aes_key = crate::config::mikrotik::get_aes_key();
+    let bot = TelegramService::create(&state.db, user_ctx.user_id, req, aes_key).await?;
 
     let _ = AuditService::log(
         &state.db, Some(user_ctx.user_id),
@@ -149,9 +143,10 @@ pub async fn update_bot(
     Json(req): Json<UpdateTelegramBotRequest>,
 ) -> Result<Json<TelegramBotResponse>, AppError> {
     require_super_admin(&user_ctx.roles)?;
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
-    let bot = TelegramService::update(&state.db, id, user_ctx.user_id, req).await?;
+    let aes_key = crate::config::mikrotik::get_aes_key();
+    let bot = TelegramService::update(&state.db, id, user_ctx.user_id, req, aes_key).await?;
 
     let _ = AuditService::log(
         &state.db, Some(user_ctx.user_id),
@@ -183,7 +178,7 @@ pub async fn delete_bot(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     require_super_admin(&user_ctx.roles)?;
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     TelegramService::delete(&state.db, id).await?;
 
@@ -217,9 +212,10 @@ pub async fn test_bot(
     Path(id): Path<Uuid>,
 ) -> Result<Json<TelegramTestResponse>, AppError> {
     require_super_admin(&user_ctx.roles)?;
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
-    let result = TelegramService::test_send(&state.db, id).await?;
+    let aes_key = crate::config::mikrotik::get_aes_key();
+    let result = TelegramService::test_send(&state.db, id, aes_key).await?;
 
     let _ = AuditService::log(
         &state.db, Some(user_ctx.user_id),

@@ -1,7 +1,7 @@
 use crate::dto::mikrotik::{
     MikrotikClientRequest, MikrotikClientResponse, MikrotikResourceResponse, MikrotikInterfaceResponse, 
     MikrotikMonitorResponse, MikrotikTorchResponse, MikrotikConfigSnapshotResponse, MikrotikConfigViewResponse,
-    MikrotikConfigDiffResponse, MikrotikConfigDiffItem
+    MikrotikConfigDiffResponse, MikrotikConfigDiffItem, BackupAndSendResponse
 };
 use crate::models::mikrotik_clients::{Entity as MikrotikClient, ActiveModel as MikrotikClientActiveModel, Model};
 use crate::models::mikrotik_config_snapshots::{Entity as ConfigSnapshot, ActiveModel as ConfigSnapshotActiveModel};
@@ -27,8 +27,8 @@ impl MikrotikService {
             id: Uuid::new_v4(),
             name_device: req.name_device,
             host: req.host,
-            username: "".to_string(), // Will be set via helper
-            password: "".to_string(), // Will be set via helper
+            username: "".to_string(),
+            password: "".to_string(),
             port_winbox: None,
             port_api: None,
             port_ftp: None,
@@ -37,6 +37,7 @@ impl MikrotikService {
             latitude: req.latitude,
             longitude: req.longitude,
             timezone: req.timezone,
+            telegram_bot_id: req.telegram_bot_id,
             created_at: Utc::now().naive_utc(),
             updated_at: Utc::now().naive_utc(),
             deleted_at: None,
@@ -105,12 +106,12 @@ impl MikrotikService {
         client.latitude = Set(req.latitude);
         client.longitude = Set(req.longitude);
         client.timezone = Set(req.timezone);
+        client.telegram_bot_id = Set(req.telegram_bot_id);
         client.updated_at = Set(Utc::now().naive_utc());
         client.updated_by = Set(Some(updated_by));
 
-        // Use a temporary model to leverage encryption helper
         let mut temp_model = Model {
-            id: Uuid::nil(), // Not used
+            id: Uuid::nil(),
             name_device: "".to_string(),
             host: "".to_string(),
             username: "".to_string(),
@@ -123,6 +124,7 @@ impl MikrotikService {
             latitude: None,
             longitude: None,
             timezone: None,
+            telegram_bot_id: None,
             created_at: Utc::now().naive_utc(),
             updated_at: Utc::now().naive_utc(),
             deleted_at: None,
@@ -181,7 +183,6 @@ impl MikrotikService {
         let device_mutex = pool.get_connection(id, db, aes_key, user_id).await?;
         let device = device_mutex.lock().await;
 
-        // Correct command construction using CommandBuilder
         let cmd = mikrotik_rs::protocol::command::CommandBuilder::new()
             .command("/system/resource/print")
             .build();
@@ -190,7 +191,6 @@ impl MikrotikService {
             .await
             .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?;
 
-        // Iterate through the responses until we get a Reply (!re) or a terminal response
         while let Some(result) = receiver.recv().await {
             let response = result.map_err(|e| AppError::InternalServerError(format!("MikroTik response error: {}", e)))?;
             
@@ -315,7 +315,7 @@ impl MikrotikService {
             device.send_command(cmd)
                 .await
                 .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?
-        }; // Lock dropped here
+        };
 
         let stream = async_stream::try_stream! {
             while let Some(result) = receiver.recv().await {
@@ -369,7 +369,7 @@ impl MikrotikService {
             device.send_command(cmd)
                 .await
                 .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?
-        }; // Lock dropped here
+        };
 
         let stream = async_stream::try_stream! {
             while let Some(result) = receiver.recv().await {
@@ -403,61 +403,73 @@ impl MikrotikService {
         Ok(stream)
     }
 
-    pub async fn check_connectivity(
+    // ─── BACKUP: Create binary .backup file via /system/backup/save ──────
+
+    pub async fn trigger_backup(
         db: &DatabaseConnection,
         pool: &MikrotikPool,
         id: Uuid,
         aes_key: &str,
         user_id: Option<Uuid>,
-    ) -> Result<bool, AppError> {
-        // Attempt to get a connection from the pool. 
-        // This will perform authentication with saved (decrypted) credentials.
-        match pool.get_connection(id, db, aes_key, user_id).await {
-            Ok(device_mutex) => {
-                // Perform identity sync in background or immediately
-                let _ = Self::sync_identity(db, device_mutex.clone(), id).await;
-                Ok(true)
-            }
-            Err(_) => Ok(false)
-        }
-    }
-
-    async fn sync_identity(
-        db: &DatabaseConnection,
-        device_mutex: std::sync::Arc<tokio::sync::Mutex<MikrotikDevice>>,
-        id: Uuid,
-    ) -> Result<(), AppError> {
+        name: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<String, AppError> {
+        let device_mutex = pool.get_connection(id, db, aes_key, user_id).await?;
         let device = device_mutex.lock().await;
-        
-        let cmd = mikrotik_rs::protocol::command::CommandBuilder::new()
-            .command("/system/identity/print")
-            .build();
 
+        let mut cmd_builder = mikrotik_rs::protocol::command::CommandBuilder::new()
+            .command("/system/backup/save");
+
+        if let Some(n) = name {
+            cmd_builder = cmd_builder.attribute("name", Some(n));
+        }
+        if let Some(pwd) = password {
+            cmd_builder = cmd_builder.attribute("password", Some(pwd));
+        } else {
+            cmd_builder = cmd_builder.attribute("dont-encrypt", Some("yes"));
+        }
+
+        let cmd = cmd_builder.build();
         let mut receiver = device.send_command(cmd)
             .await
             .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?;
 
-        if let Some(result) = receiver.recv().await {
+        let mut filename = String::new();
+        let mut success = false;
+
+        while let Some(result) = receiver.recv().await {
             let response = result.map_err(|e| AppError::InternalServerError(format!("MikroTik response error: {}", e)))?;
-            
-            if let mikrotik_rs::protocol::CommandResponse::Reply(re) = response {
-                if let Some(name) = re.attributes.get("name").and_then(|v| v.clone()) {
-                    // Update database
-                    let mut client: MikrotikClientActiveModel = MikrotikClient::find_by_id(id)
-                        .one(db)
-                        .await?
-                        .ok_or_else(|| AppError::NotFound("Client not found".to_string()))?
-                        .into();
-                    
-                    client.name_device = Set(name);
-                    client.updated_at = Set(Utc::now().naive_utc());
-                    client.update(db).await?;
+            match response {
+                mikrotik_rs::protocol::CommandResponse::Reply(re) => {
+                    if let Some(msg) = re.attributes.get("message").and_then(|v| v.clone()) {
+                        filename = msg;
+                    }
+                    if let Some(name_val) = re.attributes.get("name").and_then(|v| v.clone()) {
+                        filename = name_val;
+                    }
                 }
+                mikrotik_rs::protocol::CommandResponse::Done(_) => {
+                    success = true;
+                    break;
+                }
+                mikrotik_rs::protocol::CommandResponse::Trap(trap) => {
+                    return Err(AppError::InternalServerError(format!("MikroTik backup failed: {}", trap.message)));
+                }
+                mikrotik_rs::protocol::CommandResponse::Fatal(fatal) => {
+                    return Err(AppError::InternalServerError(format!("MikroTik Fatal: {}", fatal)));
+                }
+                _ => continue,
             }
         }
 
-        Ok(())
+        if success {
+            Ok(filename)
+        } else {
+            Err(AppError::InternalServerError("Backup creation did not complete successfully".to_string()))
+        }
     }
+
+    // ─── BACKUP: Fetch config inline via /export (for .rsc send) ─────
 
     pub async fn fetch_current_config(
         db: &DatabaseConnection,
@@ -499,6 +511,409 @@ impl MikrotikService {
         Ok(config)
     }
 
+    // ─── BACKUP: List files on device ───────────────────────────────
+
+    pub async fn list_backup_files(
+        db: &DatabaseConnection,
+        pool: &MikrotikPool,
+        id: Uuid,
+        aes_key: &str,
+        user_id: Option<Uuid>,
+    ) -> Result<Vec<crate::dto::mikrotik::BackupFileResponse>, AppError> {
+        let device_mutex = pool.get_connection(id, db, aes_key, user_id).await?;
+        let device = device_mutex.lock().await;
+
+        let cmd = mikrotik_rs::protocol::command::CommandBuilder::new()
+            .command("/file/print")
+            .attribute(".proplist", Some("name,size,type,creation-time"))
+            .build();
+
+        let mut receiver = device.send_command(cmd)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?;
+
+        let mut files = Vec::new();
+
+        while let Some(result) = receiver.recv().await {
+            let response = result.map_err(|e| AppError::InternalServerError(format!("MikroTik response error: {}", e)))?;
+            match response {
+                mikrotik_rs::protocol::CommandResponse::Reply(re) => {
+                    let attr = re.attributes;
+                    let file_type = attr.get("type").and_then(|v| v.as_deref()).unwrap_or("");
+                    let name = attr.get("name").and_then(|v| v.clone()).unwrap_or_default();
+                    
+                    // Filter .backup and .rsc files
+                    if name.ends_with(".backup") || name.ends_with(".rsc") || file_type == "backup" {
+                        files.push(crate::dto::mikrotik::BackupFileResponse {
+                            name: name.clone(),
+                            size: attr.get("size").and_then(|v| v.as_ref().and_then(|s| s.parse::<i64>().ok())).unwrap_or(0),
+                            creation_time: attr.get("creation-time").and_then(|v| v.clone()).unwrap_or_default(),
+                        });
+                    }
+                }
+                mikrotik_rs::protocol::CommandResponse::Done(_) => break,
+                mikrotik_rs::protocol::CommandResponse::Trap(trap) => {
+                    return Err(AppError::InternalServerError(format!("MikroTik file listing failed: {}", trap.message)));
+                }
+                mikrotik_rs::protocol::CommandResponse::Fatal(fatal) => {
+                    return Err(AppError::InternalServerError(format!("MikroTik Fatal: {}", fatal)));
+                }
+                _ => continue,
+            }
+        }
+
+        // Sort by creation time descending (newest first)
+        files.sort_by(|a, b| b.creation_time.cmp(&a.creation_time));
+        Ok(files)
+    }
+
+    // ─── BACKUP: Download file via SSH/SCP ─────────────────────────
+
+    /// Download a file from the MikroTik device using SCP over SSH.
+    /// Uses the device's stored SSH credentials and port.
+    async fn download_file_via_scp(
+        db: &DatabaseConnection,
+        id: Uuid,
+        aes_key: &str,
+        filename: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        let client = MikrotikClient::find_by_id(id)
+            .filter(crate::models::mikrotik_clients::Column::DeletedAt.is_null())
+            .one(db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Device not found".to_string()))?;
+
+        let username = client.decrypt_username(aes_key)?;
+        let password = client.decrypt_password(aes_key)?;
+        let ssh_port = match client.decrypt_port_ssh(aes_key)? {
+            Some(p) => p.parse::<u16>().map_err(|_| AppError::InternalServerError("Invalid SSH port value".to_string()))?,
+            None => 22,
+        };
+
+        let addr = format!("{}:{}", client.host, ssh_port);
+        let f_username = username.clone();
+        let f_password = password.clone();
+        let f_filename = filename.to_string();
+        let f_host = client.host.clone();
+        let f_addr = addr.clone();
+
+        let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+            use std::io::Read;
+            use std::net::TcpStream;
+            use std::path::Path;
+
+            // Connect TCP
+            let tcp = TcpStream::connect(&f_addr)
+                .map_err(|e| format!(
+                    "SSH connection failed to {}: {}",
+                    f_addr, e
+                ))?;
+
+            // Create SSH session
+            let mut sess = ssh2::Session::new()
+                .map_err(|e| format!("Failed to create SSH session: {}", e))?;
+
+            sess.set_tcp_stream(tcp);
+            sess.handshake()
+                .map_err(|e| format!("SSH handshake failed with '{}': {}", f_host, e))?;
+
+            // Authenticate
+            sess.userauth_password(&f_username, &f_password)
+                .map_err(|e| format!("SSH authentication failed for '{}': {}", f_host, e))?;
+
+            if !sess.authenticated() {
+                return Err(format!("SSH authentication failed for '{}': invalid credentials", f_host));
+            }
+
+            // SCP receive the file
+            let (mut channel, _stat) = sess.scp_recv(Path::new(&f_filename))
+                .map_err(|e| format!(
+                    "SCP download failed for '{}' from '{}': {}. Ensure SSH server and SCP are enabled on the device.",
+                    f_filename, f_host, e
+                ))?;
+
+            let mut data = Vec::new();
+            channel.read_to_end(&mut data)
+                .map_err(|e| format!("Failed to read SCP data for '{}': {}", f_filename, e))?;
+
+            // Drop the channel - this sends EOF and closes it automatically
+            // Do NOT call wait_close() as it can fail with "channel not in EOF state"
+            // on some RouterOS versions. The channel destructor handles cleanup.
+            drop(channel);
+
+            Ok(data)
+        })
+        .await
+        .map_err(|e| AppError::InternalServerError(format!("SCP download thread panicked: {}", e)))?
+        .map_err(|e| AppError::InternalServerError(e))?;
+        
+        if bytes.is_empty() {
+            return Err(AppError::NotFound(format!("File '{}' not found or empty on device", filename)));
+        }
+
+        Ok(bytes)
+    }
+
+    // ─── BACKUP: Download file (public wrapper) ──────────────────────
+
+    pub async fn download_backup_file(
+        db: &DatabaseConnection,
+        _pool: &MikrotikPool,
+        id: Uuid,
+        aes_key: &str,
+        _user_id: Option<Uuid>,
+        filename: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        // Use FTP to download the backup file
+        // RouterOS API does NOT support /file/get-contents (no such command)
+        // FTP is the standard way to transfer files from MikroTik
+        Self::download_file_via_scp(db, id, aes_key, filename).await
+    }
+
+    // ─── BACKUP: Delete file from device ───────────────────────────
+
+    pub async fn delete_file(
+        db: &DatabaseConnection,
+        pool: &MikrotikPool,
+        id: Uuid,
+        aes_key: &str,
+        user_id: Option<Uuid>,
+        filename: &str,
+    ) -> Result<(), AppError> {
+        let device_mutex = pool.get_connection(id, db, aes_key, user_id).await?;
+        let device = device_mutex.lock().await;
+
+        let cmd = mikrotik_rs::protocol::command::CommandBuilder::new()
+            .command("/file/remove")
+            .attribute("numbers", Some(filename))
+            .build();
+
+        let mut receiver = device.send_command(cmd)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?;
+
+        while let Some(result) = receiver.recv().await {
+            let response = result.map_err(|e| AppError::InternalServerError(format!("MikroTik response error: {}", e)))?;
+            match response {
+                mikrotik_rs::protocol::CommandResponse::Done(_) => {
+                    return Ok(());
+                }
+                mikrotik_rs::protocol::CommandResponse::Trap(trap) => {
+                    return Err(AppError::InternalServerError(format!("MikroTik file remove failed: {}", trap.message)));
+                }
+                mikrotik_rs::protocol::CommandResponse::Fatal(fatal) => {
+                    return Err(AppError::InternalServerError(format!("MikroTik Fatal: {}", fatal)));
+                }
+                _ => continue,
+            }
+        }
+
+        Ok(())
+    }
+
+    // ─── BACKUP: Orchestration - Backup & Send to Telegram ───────────
+
+    pub async fn backup_and_send(
+        db: &DatabaseConnection,
+        pool: &MikrotikPool,
+        id: Uuid,
+        aes_key: &str,
+        user_id: Option<Uuid>,
+        name: Option<&str>,
+        password: Option<&str>,
+        format: &crate::dto::mikrotik::BackupFormat,
+        telegram_bot_id: Uuid,
+        delete_after_send: bool,
+    ) -> Result<BackupAndSendResponse, AppError> {
+        use crate::services::telegram_service::TelegramService;
+
+        match format {
+            // ── .backup: Create file, download via SCP, send, delete ──
+            crate::dto::mikrotik::BackupFormat::Backup => {
+                let api_filename = Self::trigger_backup(db, pool, id, aes_key, user_id, name, password).await?;
+
+                // RouterOS adds .backup extension automatically.
+                // The API response may not always return the full filename,
+                // so we construct it from the 'name' parameter if needed.
+                let filename = if api_filename.is_empty() || !api_filename.ends_with(".backup") {
+                    if let Some(n) = name {
+                        format!("{}.backup", n)
+                    } else {
+                        return Err(AppError::InternalServerError(
+                            "Could not determine backup filename from API response. 
+                             Please provide a 'name' parameter.".to_string()
+                        ));
+                    }
+                } else {
+                    api_filename
+                };
+
+                // Brief wait for file to be written
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Download via SCP over SSH
+                let contents = Self::download_file_via_scp(db, id, aes_key, &filename).await?;
+
+                // Send to Telegram
+                let send_result = TelegramService::send_document(
+                    db, telegram_bot_id, &contents, &filename,
+                    &format!("📦 *Backup*: `{}`\n📁 *Format*: `.backup`", filename),
+                    aes_key,
+                ).await;
+
+                let telegram_success = match &send_result {
+                    Ok((true, _)) => true,
+                    _ => false,
+                };
+                let telegram_message = match &send_result {
+                    Ok((true, _)) => Some("Backup berhasil dikirim ke Telegram.".to_string()),
+                    Ok((false, Some(err))) => Some(format!("Telegram API: {}", err)),
+                    Ok((false, None)) => Some("Telegram API menolak file (mungkin terlalu besar atau format tidak didukung).".to_string()),
+                    Err(e) => Some(format!("Gagal kirim ke Telegram: {}", e)),
+                };
+
+                // Delete file if requested and successful
+                let mut deleted_from_device = false;
+                if delete_after_send && telegram_success {
+                    match Self::delete_file(db, pool, id, aes_key, user_id, &filename).await {
+                        Ok(_) => {
+                            deleted_from_device = true;
+                            tracing::info!("Deleted backup file '{}' from device {}", filename, id);
+                        }
+                        Err(e) => tracing::warn!("Failed to delete '{}' from device {}: {}", filename, id, e),
+                    }
+                }
+
+                Ok(BackupAndSendResponse {
+                    filename,
+                    format: "backup".to_string(),
+                    telegram_bot_id,
+                    telegram_success,
+                    telegram_message,
+                    deleted_from_device,
+                })
+            }
+
+            // ── .rsc: Export to file via /export file=, download via SCP, send ──
+            crate::dto::mikrotik::BackupFormat::Rsc => {
+                let base_name = name.unwrap_or("export");
+                let rsc_filename = format!("{}.rsc", base_name);
+
+                // Create the .rsc file on the device via /export file=basename
+                // RouterOS automatically adds .rsc extension, so we use just the base name
+                let device_mutex = pool.get_connection(id, db, aes_key, user_id).await?;
+                let device = device_mutex.lock().await;
+
+                let cmd = mikrotik_rs::protocol::command::CommandBuilder::new()
+                    .command("/export")
+                    .attribute("file", Some(base_name))
+                    .attribute("hide-sensitive", Some("yes"))
+                    .build();
+
+                let mut receiver = device.send_command(cmd)
+                    .await
+                    .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?;
+
+                let mut export_success = false;
+                while let Some(result) = receiver.recv().await {
+                    let response = result.map_err(|e| AppError::InternalServerError(format!("MikroTik response error: {}", e)))?;
+                    match response {
+                        mikrotik_rs::protocol::CommandResponse::Done(_) => {
+                            export_success = true;
+                            break;
+                        }
+                        mikrotik_rs::protocol::CommandResponse::Trap(trap) => {
+                            return Err(AppError::InternalServerError(format!("MikroTik export failed: {}", trap.message)));
+                        }
+                        mikrotik_rs::protocol::CommandResponse::Fatal(fatal) => {
+                            return Err(AppError::InternalServerError(format!("MikroTik Fatal: {}", fatal)));
+                        }
+                        _ => continue,
+                    }
+                }
+                // Drop device lock before SCP download
+                drop(device);
+
+                if !export_success {
+                    return Err(AppError::InternalServerError("Export command did not complete".to_string()));
+                }
+
+                // Brief wait for file to be written
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Download via SCP over SSH
+                let contents = Self::download_file_via_scp(db, id, aes_key, &rsc_filename).await?;
+
+                // Drop the DB lock before potentially slow SCP
+                // Send to Telegram
+                let send_result = TelegramService::send_document(
+                    db, telegram_bot_id, &contents, &rsc_filename,
+                    &format!("📄 *Config Export*: `{}`\n📁 *Format*: `.rsc`", rsc_filename),
+                    aes_key,
+                ).await;
+
+                let telegram_success = match &send_result {
+                    Ok((true, _)) => true,
+                    _ => false,
+                };
+                let telegram_message = match &send_result {
+                    Ok((true, _)) => Some("Export berhasil dikirim ke Telegram.".to_string()),
+                    Ok((false, Some(err))) => Some(format!("Telegram API: {}", err)),
+                    Ok((false, None)) => Some("Telegram API menolak file.".to_string()),
+                    Err(e) => Some(format!("Gagal kirim ke Telegram: {}", e)),
+                };
+
+                // Delete file from device if requested and successful
+                let mut deleted_from_device = false;
+                if delete_after_send && telegram_success {
+                    match Self::delete_file(db, pool, id, aes_key, user_id, &rsc_filename).await {
+                        Ok(_) => {
+                            deleted_from_device = true;
+                            tracing::info!("Deleted export file '{}' from device {}", rsc_filename, id);
+                        }
+                        Err(e) => tracing::warn!("Failed to delete '{}' from device {}: {}", rsc_filename, id, e),
+                    }
+                }
+
+                Ok(BackupAndSendResponse {
+                    filename: rsc_filename,
+                    format: "rsc".to_string(),
+                    telegram_bot_id,
+                    telegram_success,
+                    telegram_message,
+                    deleted_from_device,
+                })
+            }
+        }
+    }
+
+    // ─── CONFIGURATION SNAPSHOTS ────────────────────────────────────
+
+    async fn enforce_snapshot_retention(db: &DatabaseConnection, mikrotik_id: Uuid) -> Result<(), AppError> {
+        let count = ConfigSnapshot::find()
+            .filter(crate::models::mikrotik_config_snapshots::Column::MikrotikId.eq(mikrotik_id))
+            .count(db)
+            .await?;
+
+        if count > 50 {
+            let excess = count - 50;
+            let old_snapshots = ConfigSnapshot::find()
+                .filter(crate::models::mikrotik_config_snapshots::Column::MikrotikId.eq(mikrotik_id))
+                .order_by_asc(crate::models::mikrotik_config_snapshots::Column::CreatedAt)
+                .limit(excess)
+                .all(db)
+                .await?;
+
+            for s in old_snapshots {
+                let _ = ConfigSnapshot::delete_by_id(s.id)
+                    .exec(db)
+                    .await;
+            }
+            tracing::info!("Cleaned up {} old snapshots for device {}", excess, mikrotik_id);
+        }
+        Ok(())
+    }
+
     pub async fn perform_versioned_backup(
         db: &DatabaseConnection,
         pool: &MikrotikPool,
@@ -506,15 +921,14 @@ impl MikrotikService {
         aes_key: &str,
         user_id: Option<Uuid>,
     ) -> Result<MikrotikConfigSnapshotResponse, AppError> {
-        // 1. Fetch current config
+        Self::enforce_snapshot_retention(db, id).await?;
+
         let content = Self::fetch_current_config(db, pool, id, aes_key, user_id).await?;
         
-        // 2. Calculate Hash
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
         let hash_hex = hex::encode(hasher.finalize());
 
-        // 3. Get latest snapshot for comparison
         let latest = ConfigSnapshot::find()
             .filter(crate::models::mikrotik_config_snapshots::Column::MikrotikId.eq(id))
             .order_by_desc(crate::models::mikrotik_config_snapshots::Column::CreatedAt)
@@ -523,7 +937,6 @@ impl MikrotikService {
 
         if let Some(last) = latest {
             if last.config_hash == hash_hex {
-                // Deduplicate: No changes
                 return Ok(MikrotikConfigSnapshotResponse {
                     id: last.id,
                     config_hash: last.config_hash,
@@ -532,7 +945,6 @@ impl MikrotikService {
             }
         }
 
-        // 4. Save new snapshot
         let new_snapshot = ConfigSnapshotActiveModel {
             id: Set(Uuid::new_v4()),
             mikrotik_id: Set(id),
@@ -617,12 +1029,64 @@ impl MikrotikService {
         Ok(MikrotikConfigDiffResponse { diffs: diff_items })
     }
 
+    pub async fn check_connectivity(
+        db: &DatabaseConnection,
+        pool: &MikrotikPool,
+        id: Uuid,
+        aes_key: &str,
+        user_id: Option<Uuid>,
+    ) -> Result<bool, AppError> {
+        match pool.get_connection(id, db, aes_key, user_id).await {
+            Ok(device_mutex) => {
+                let _ = Self::sync_identity(db, device_mutex.clone(), id).await;
+                Ok(true)
+            }
+            Err(_) => Ok(false)
+        }
+    }
+
+    async fn sync_identity(
+        db: &DatabaseConnection,
+        device_mutex: std::sync::Arc<tokio::sync::Mutex<MikrotikDevice>>,
+        id: Uuid,
+    ) -> Result<(), AppError> {
+        let device = device_mutex.lock().await;
+        
+        let cmd = mikrotik_rs::protocol::command::CommandBuilder::new()
+            .command("/system/identity/print")
+            .build();
+
+        let mut receiver = device.send_command(cmd)
+            .await
+            .map_err(|e| AppError::InternalServerError(format!("MikroTik communication error: {}", e)))?;
+
+        if let Some(result) = receiver.recv().await {
+            let response = result.map_err(|e| AppError::InternalServerError(format!("MikroTik response error: {}", e)))?;
+            
+            if let mikrotik_rs::protocol::CommandResponse::Reply(re) = response {
+                if let Some(name) = re.attributes.get("name").and_then(|v| v.clone()) {
+                    let mut client: MikrotikClientActiveModel = MikrotikClient::find_by_id(id)
+                        .one(db)
+                        .await?
+                        .ok_or_else(|| AppError::NotFound("Client not found".to_string()))?
+                        .into();
+                    
+                    client.name_device = Set(name);
+                    client.updated_at = Set(Utc::now().naive_utc());
+                    client.update(db).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn map_to_response(model: Model) -> MikrotikClientResponse {
          MikrotikClientResponse {
             id: model.id,
             name_device: model.name_device,
             host: model.host,
-            username: "********".to_string(), // Masked
+            username: "********".to_string(),
             port_ssh: model.port_ssh.as_ref().map(|_| "********".to_string()),
             port_winbox: model.port_winbox.as_ref().map(|_| "********".to_string()),
             port_api: model.port_api.as_ref().map(|_| "********".to_string()),
@@ -631,12 +1095,14 @@ impl MikrotikService {
             latitude: model.latitude,
             longitude: model.longitude,
             timezone: model.timezone,
+            telegram_bot_id: model.telegram_bot_id,
             created_at: model.created_at,
             updated_at: model.updated_at,
             created_by: model.created_by,
             updated_by: model.updated_by,
         }
     }
+
     fn parse_mikrotik_rate(input: &str) -> u64 {
         if input.is_empty() { return 0; }
         

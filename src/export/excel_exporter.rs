@@ -1,12 +1,16 @@
 use crate::dto::user::UserProfileResponse;
 use crate::errors::app_error::AppError;
+use uuid::Uuid;
 use xlsxwriter::*;
 
 pub struct ExcelExporter;
 
 impl ExcelExporter {
     pub fn export_users(users: Vec<UserProfileResponse>) -> Result<Vec<u8>, AppError> {
-        let workbook = Workbook::new("/tmp/users_export.xlsx")
+        // Gunakan nama file unik per request untuk mencegah race condition
+        // ketika ada multiple concurrent export requests
+        let file_name = format!("/tmp/users_export_{}.xlsx", Uuid::new_v4());
+        let workbook = Workbook::new(&file_name)
             .map_err(|e| AppError::InternalServerError(e.to_string()))?;
             
         let mut sheet = workbook.add_worksheet(None)
@@ -31,9 +35,12 @@ impl ExcelExporter {
         workbook.close()
             .map_err(|e| AppError::InternalServerError(e.to_string()))?;
 
-        // Read back from file
-        let data = std::fs::read("/tmp/users_export.xlsx")
+        // Read back from file unik
+        let data = std::fs::read(&file_name)
             .map_err(|e| AppError::StorageError(e.to_string()))?;
+            
+        // Hapus file temporary setelah dibaca
+        let _ = std::fs::remove_file(&file_name);
             
         Ok(data)
     }

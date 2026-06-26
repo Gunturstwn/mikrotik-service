@@ -1,4 +1,4 @@
-use axum::extract::State;
+use axum::extract::{State, Query};
 use crate::services::user_service::UserService;
 use crate::services::audit::AuditService;
 use crate::middlewares::auth::UserContext;
@@ -8,12 +8,20 @@ use crate::export::{CSVExporter, ExcelExporter};
 use crate::utils::ip::extract_ip_from_headers;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use serde::Deserialize;
 
-
+#[derive(Deserialize)]
+pub struct ExportQuery {
+    /// Maximum number of users to export (default: 10000, max: 100000)
+    max: Option<u64>,
+}
 
 #[utoipa::path(
     get,
     path = "/api/export/users/csv",
+    params(
+        ("max" = Option<u64>, Query, description = "Maximum users to export (default: 10000, max: 100000)")
+    ),
     responses(
         (status = 200, description = "CSV file download", content_type = "text/csv"),
         (status = 401, description = "Unauthorized"),
@@ -25,6 +33,7 @@ pub async fn export_users_csv(
     State(state): State<AppState>,
     req_headers: axum::http::HeaderMap,
     user_ctx: UserContext,
+    Query(query): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let ip = extract_ip_from_headers(&req_headers);
 
@@ -37,7 +46,8 @@ pub async fn export_users_csv(
         return Err(AppError::Forbidden("Super Admin role required".to_string()));
     }
 
-    let res = UserService::find_all(&state.db, 1, 10000).await?;
+    let max_results = query.max.unwrap_or(10000).min(100000);
+    let res = UserService::find_all(&state.db, 1, max_results).await?;
     let total = res.total;
     let csv_bytes = CSVExporter::export_users(res.items)?;
 
@@ -60,6 +70,9 @@ pub async fn export_users_csv(
 #[utoipa::path(
     get,
     path = "/api/export/users/xlsx",
+    params(
+        ("max" = Option<u64>, Query, description = "Maximum users to export (default: 10000, max: 100000)")
+    ),
     responses(
         (status = 200, description = "Excel file download", content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         (status = 401, description = "Unauthorized"),
@@ -71,6 +84,7 @@ pub async fn export_users_xlsx(
     State(state): State<AppState>,
     req_headers: axum::http::HeaderMap,
     user_ctx: UserContext,
+    Query(query): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let ip = extract_ip_from_headers(&req_headers);
 
@@ -83,7 +97,8 @@ pub async fn export_users_xlsx(
         return Err(AppError::Forbidden("Super Admin role required".to_string()));
     }
 
-    let res = UserService::find_all(&state.db, 1, 10000).await?;
+    let max_results = query.max.unwrap_or(10000).min(100000);
+    let res = UserService::find_all(&state.db, 1, max_results).await?;
     let total = res.total;
     let xlsx_bytes = ExcelExporter::export_users(res.items)?;
 

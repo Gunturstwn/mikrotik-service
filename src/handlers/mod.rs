@@ -4,3 +4,6 @@ pub mod user_handler;
 pub mod export_handler;
 pub mod mikrotik_handler;
 pub mod telegram_handler;
+pub mod role_handler;
+pub mod audit_handler;
+pub mod metrics_handler;

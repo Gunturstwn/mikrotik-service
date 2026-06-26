@@ -40,7 +40,11 @@ pub struct TelegramBotResponse {
     pub chat_id: String,
     pub is_active: bool,
     pub description: Option<String>,
+    /// Timestamp when the bot was created
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
     pub created_at: NaiveDateTime,
+    /// Timestamp when the bot was last updated
+    #[schema(value_type = String, format = "date-time", example = "2026-06-26T12:00:00")]
     pub updated_at: NaiveDateTime,
     pub created_by: Uuid,
     pub updated_by: Option<Uuid>,

@@ -1,76 +1,47 @@
 use axum::{extract::State, Json};
-use crate::dto::user::{UserProfileResponse, UpdateUserRequest, UserListResponse};
+use crate::dto::user::{UserProfileResponse, UpdateUserRequest, UserListResponse, ChangePasswordRequest};
 use crate::services::user_service::UserService;
 use crate::services::audit::AuditService;
 use crate::middlewares::auth::UserContext;
+use crate::utils::ip::extract_ip_from_headers;
+use crate::utils::multipart::parse_multipart_update;
 use crate::AppState;
 use crate::errors::app_error::AppError;
+use validator::Validate;
 
-/// Helper: extract client IP from headers
-fn extract_ip(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .or_else(|| headers.get("x-real-ip").and_then(|h| h.to_str().ok()))
-        .or_else(|| headers.get("host").and_then(|h| h.to_str().ok()))
-        .unwrap_or("unknown")
-        .to_string()
+/// PUT /api/users/me/password — Change current user's password
+#[utoipa::path(
+    put,
+    path = "/api/users/me/password",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 200, description = "Password changed successfully"),
+        (status = 400, description = "Bad request (incorrect current password)"),
+        (status = 401, description = "Unauthorized")
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn change_password(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    user_ctx: UserContext,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
+    let ip = extract_ip_from_headers(&headers);
+
+    req.validate().map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    UserService::change_password(&state.db, user_ctx.user_id, req).await?;
+
+    let _ = AuditService::log(
+        &state.db, Some(user_ctx.user_id),
+        "USER_PASSWORD_CHANGED", "PUT", "/api/users/me/password", 200, &ip,
+        None,
+    ).await;
+
+    Ok(axum::http::StatusCode::OK)
 }
 
-/// Helper: extract multipart fields for user update
-async fn parse_multipart_update(
-    mut multipart: axum::extract::Multipart,
-    storage: &aws_sdk_s3::Client,
-) -> Result<UpdateUserRequest, AppError> {
-    let mut name = None;
-    let mut phone = None;
-    let mut address = None;
-    let mut photo_url = None;
-    let mut lat = None;
-    let mut lng = None;
-    let mut payment_token = None;
-    let mut photo_bytes = None;
-
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(format!("Multipart field error: {}", e)))? {
-        let field_name = field.name().unwrap_or("").to_string();
-        match field_name.as_str() {
-            "name" => name = field.text().await.ok().filter(|s| !s.is_empty()),
-            "phone" => phone = field.text().await.ok().filter(|s| !s.is_empty()),
-            "address" => address = field.text().await.ok().filter(|s| !s.is_empty()),
-            "lat" => lat = field.text().await.ok().and_then(|s| s.parse::<f64>().ok()),
-            "lng" => lng = field.text().await.ok().and_then(|s| s.parse::<f64>().ok()),
-            "payment_token" => payment_token = field.text().await.ok().filter(|s| !s.is_empty()),
-            "photo" => {
-                if let Ok(data) = field.bytes().await {
-                    if !data.is_empty() {
-                        photo_bytes = Some(data.to_vec());
-                    }
-                }
-            }
-            _ => {} // ignore unknown fields
-        }
-    }
-
-    if let Some(bytes) = photo_bytes {
-        photo_url = match crate::services::storage_service::StorageService::process_and_upload_image(storage, &bytes).await {
-            Ok(url) => Some(url),
-            Err(e) => {
-                tracing::error!("NON-CRITICAL: Photo upload failed during user update: {}. Proceeding without changing photo.", e);
-                None
-            }
-        };
-    }
-
-    Ok(UpdateUserRequest {
-        name,
-        phone,
-        address,
-        photo: photo_url,
-        lat,
-        lng,
-        payment_token,
-    })
-}
 
 #[utoipa::path(
     get,
@@ -86,7 +57,7 @@ pub async fn get_me(
     headers: axum::http::HeaderMap,
     user_ctx: UserContext,
 ) -> Result<Json<UserProfileResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
     let res = UserService::get_profile(&state.db, user_ctx.user_id).await?;
 
     let _ = AuditService::log(
@@ -114,7 +85,7 @@ pub async fn update_me(
     user_ctx: UserContext,
     multipart: axum::extract::Multipart,
 ) -> Result<Json<UserProfileResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
     let req = parse_multipart_update(multipart, &state.storage).await?;
     let res = UserService::update_profile(&state.db, user_ctx.user_id, req).await?;
 
@@ -144,7 +115,7 @@ pub async fn upload_photo(
     user_ctx: UserContext,
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<UserProfileResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
     let mut photo_bytes = Vec::new();
 
     // Issue fix #7: Gunakan proper error propagation, bukan unwrap_or(None) yang swallow error
@@ -210,7 +181,7 @@ pub async fn get_users(
     user_ctx: UserContext,
     axum::extract::Query(params): axum::extract::Query<serde_json::Value>,
 ) -> Result<Json<UserListResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -223,6 +194,9 @@ pub async fn get_users(
 
     let page = params.get("page").and_then(|v| v.as_u64()).unwrap_or(1);
     let page_size = params.get("page_size").and_then(|v| v.as_u64()).unwrap_or(10);
+
+    // Batasi page_size maksimal 100 untuk mencegah abuse / OOM
+    let page_size = page_size.min(100);
 
     let res = UserService::find_all(&state.db, page, page_size).await?;
 
@@ -255,7 +229,7 @@ pub async fn get_user(
     user_ctx: UserContext,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<Json<UserProfileResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -292,7 +266,7 @@ pub async fn delete_user(
     user_ctx: UserContext,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> Result<impl axum::response::IntoResponse, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     if !user_ctx.roles.contains(&"Super Admin".to_string()) {
         let _ = AuditService::log(
@@ -336,7 +310,7 @@ pub async fn update_user(
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     multipart: axum::extract::Multipart,
 ) -> Result<Json<UserProfileResponse>, AppError> {
-    let ip = extract_ip(&headers);
+    let ip = extract_ip_from_headers(&headers);
 
     // Bug fix #3: Cek role SEBELUM memproses multipart/upload foto ke storage
     // Mencegah non-admin men-trigger upload ke MinIO lalu mendapat 403

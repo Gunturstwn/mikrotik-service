@@ -4,6 +4,9 @@ mod user_routes;
 mod export_routes;
 mod mikrotik_routes;
 mod telegram_routes;
+mod role_routes;
+mod audit_routes;
+mod metrics_routes;
 
 use axum::Router;
 use crate::AppState;
@@ -31,14 +34,6 @@ pub fn create_router(state: AppState) -> Router {
             Method::PATCH,
             Method::OPTIONS,
         ])
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::PATCH,
-            Method::OPTIONS,
-        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -53,7 +48,12 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/users", user_routes::routes())
         .nest("/api/export", export_routes::routes())
         .nest("/api/mikrotik_client", mikrotik_routes::routes())
+        .nest("/api/roles", role_routes::role_routes())
+        .nest("/api/permissions", role_routes::permission_routes())
+        .nest("/api/users", role_routes::user_role_routes())
         .nest("/api/telegram", telegram_routes::routes())
+        .nest("/api/audit-logs", audit_routes::routes())
+        .nest("/api/mikrotik_client", metrics_routes::routes())
         .layer(cors)
         .with_state(state)
 }

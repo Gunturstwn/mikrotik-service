@@ -11,6 +11,10 @@ import DashboardHome from './pages/dashboard/DashboardHome.vue'
 import ProfilePage from './pages/dashboard/ProfilePage.vue'
 import MikrotikPage from './pages/dashboard/MikrotikPage.vue'
 import TelegramPage from './pages/dashboard/TelegramPage.vue'
+import RolesPage from './pages/dashboard/RolesPage.vue'
+import AuditLogsPage from './pages/dashboard/AuditLogsPage.vue'
+import BackupLogsPage from './pages/dashboard/BackupLogsPage.vue'
+import MetricsPage from './pages/dashboard/MetricsPage.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -25,6 +29,10 @@ const router = createRouter({
         { path: 'profile', component: ProfilePage },
         { path: 'mikrotik', component: MikrotikPage },
         { path: 'telegram', component: TelegramPage },
+        { path: 'roles', component: RolesPage },
+        { path: 'audit-logs', component: AuditLogsPage },
+        { path: 'backup-logs', component: BackupLogsPage },
+        { path: 'metrics', component: MetricsPage },
       ],
     },
   ],

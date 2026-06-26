@@ -39,6 +39,23 @@ pub async fn login_rate_limit_middleware(
     }
 }
 
+/// Rate limiter untuk endpoint sensitif (forgot-password, reset-password).
+/// Mencegah email bombing dan brute-force reset token.
+/// 1 req/s, burst 3 per IP — lebih ketat dari login karena efek abuse lebih besar.
+pub async fn sensitive_auth_rate_limit_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let ip = extract_ip(&request);
+    // Gunakan key prefix yang berbeda untuk membedakan counter dari endpoint lain
+    let path = request.uri().path().replace('/', "_");
+    let key = format!("rate:sensitive:{}:{}", path, ip);
 
-
-
+    // 1 req/s, 3 burst
+    if state.redis.check_rate_limit(&key, 1.0, 3.0).await? {
+        Ok(next.run(request).await)
+    } else {
+        Err(AppError::TooManyRequests("Rate limit exceeded. Please wait before retrying.".to_string()))
+    }
+}

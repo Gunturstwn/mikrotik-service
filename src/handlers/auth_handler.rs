@@ -6,6 +6,7 @@ use crate::middlewares::auth::UserContext;
 use crate::AppState;
 use crate::errors::app_error::AppError;
 use crate::utils::ip::extract_ip_from_headers;
+use crate::utils::multipart::parse_register_multipart;
 use validator::Validate;
 
 
@@ -25,7 +26,7 @@ pub async fn register(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     user_ctx: UserContext,
-    mut multipart: axum::extract::Multipart,
+    multipart: axum::extract::Multipart,
 ) -> Result<(StatusCode, Json<AuthResponse>), AppError> {
     let ip = extract_ip_from_headers(&headers);
 
@@ -38,70 +39,20 @@ pub async fn register(
         return Err(AppError::Forbidden("Super Admin role required to register new users".to_string()));
     }
 
-    // Parse multipart fields
-    let mut name: Option<String> = None;
-    let mut email: Option<String> = None;
-    let mut password: Option<String> = None;
-    let mut phone: Option<String> = None;
-    let mut address: Option<String> = None;
-    let mut lat: Option<f64> = None;
-    let mut lng: Option<f64> = None;
-    let mut payment_token: Option<String> = None;
-    let mut role: Option<String> = None;
-    let mut photo_bytes: Option<Vec<u8>> = None;
-
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(format!("Multipart field error: {}", e)))? {
-        let field_name = field.name().unwrap_or("").to_string();
-        match field_name.as_str() {
-            "name" => name = field.text().await.ok(),
-            "email" => email = field.text().await.ok(),
-            "password" => password = field.text().await.ok(),
-            "phone" => phone = field.text().await.ok().filter(|s| !s.is_empty()),
-            "address" => address = field.text().await.ok().filter(|s| !s.is_empty()),
-            "lat" => lat = field.text().await.ok().and_then(|s| s.parse::<f64>().ok()),
-            "lng" => lng = field.text().await.ok().and_then(|s| s.parse::<f64>().ok()),
-            "payment_token" => payment_token = field.text().await.ok().filter(|s| !s.is_empty()),
-            "role" => role = field.text().await.ok().filter(|s| !s.is_empty()),
-            "photo" => {
-                if let Ok(data) = field.bytes().await {
-                    if !data.is_empty() {
-                        photo_bytes = Some(data.to_vec());
-                    }
-                }
-            }
-            _ => {} // ignore unknown fields
-        }
-    }
-
-    // Validate required fields presence
-    let name = name.ok_or_else(|| AppError::BadRequest("Field 'name' is required".to_string()))?;
-    let email = email.ok_or_else(|| AppError::BadRequest("Field 'email' is required".to_string()))?;
-    let password = password.ok_or_else(|| AppError::BadRequest("Field 'password' is required".to_string()))?;
-
-    // Upload photo to MinIO if provided
-    let photo_url = if let Some(bytes) = photo_bytes {
-        match crate::services::storage_service::StorageService::process_and_upload_image(&state.storage, &bytes).await {
-            Ok(url) => Some(url),
-            Err(e) => {
-                tracing::error!("NON-CRITICAL: Photo upload failed during registration: {}. Proceeding without photo.", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Parse multipart fields using shared utility
+    let parsed = parse_register_multipart(multipart, &state.storage).await?;
 
     let req = RegisterRequest {
-        name,
-        email: email.clone(),
-        password,
-        phone,
-        address,
-        photo: photo_url,
-        lat,
-        lng,
-        payment_token,
-        role,
+        name: parsed.name,
+        email: parsed.email.clone(),
+        password: parsed.password,
+        phone: parsed.phone,
+        address: parsed.address,
+        photo: parsed.photo_url,
+        lat: parsed.lat,
+        lng: parsed.lng,
+        payment_token: parsed.payment_token,
+        role: parsed.role,
     };
 
     // Bug fix #4: Andalkan req.validate() sepenuhnya — validasi manual duplikat sudah dihapus.
@@ -116,7 +67,7 @@ pub async fn register(
             let _ = AuditService::log(
                 &state.db, Some(user_ctx.user_id),
                 "USER_REGISTER_SUCCESS", "POST", "/api/auth/register", 201, &ip,
-                Some(serde_json::json!({"registered_email": email})),
+                Some(serde_json::json!({"registered_email": parsed.email})),
             ).await;
             // Bug fix #3: Return 201 Created (bukan 200 OK) sesuai HTTP semantics dan Swagger docs
             Ok((StatusCode::CREATED, Json(res)))
@@ -125,7 +76,7 @@ pub async fn register(
             let _ = AuditService::log(
                 &state.db, Some(user_ctx.user_id),
                 "USER_REGISTER_FAILED", "POST", "/api/auth/register", 400, &ip,
-                Some(serde_json::json!({"email": email, "error": e.to_string()})),
+                Some(serde_json::json!({"email": parsed.email, "error": e.to_string()})),
             ).await;
             Err(e)
         }

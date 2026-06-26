@@ -46,6 +46,7 @@ impl Modify for SecurityAddon {
         mikrotik_service::handlers::user_handler::get_user,
         mikrotik_service::handlers::user_handler::update_user,
         mikrotik_service::handlers::user_handler::delete_user,
+        mikrotik_service::handlers::user_handler::change_password,
         mikrotik_service::handlers::export_handler::export_users_csv,
         mikrotik_service::handlers::export_handler::export_users_xlsx,
         mikrotik_service::handlers::mikrotik_handler::create_client,
@@ -67,6 +68,28 @@ impl Modify for SecurityAddon {
         mikrotik_service::handlers::telegram_handler::update_bot,
         mikrotik_service::handlers::telegram_handler::delete_bot,
         mikrotik_service::handlers::telegram_handler::test_bot,
+        mikrotik_service::handlers::role_handler::list_roles,
+        mikrotik_service::handlers::role_handler::create_role,
+        mikrotik_service::handlers::role_handler::get_role,
+        mikrotik_service::handlers::role_handler::update_role,
+        mikrotik_service::handlers::role_handler::delete_role,
+        mikrotik_service::handlers::role_handler::list_permissions,
+        mikrotik_service::handlers::role_handler::create_permission,
+        mikrotik_service::handlers::role_handler::update_permission,
+        mikrotik_service::handlers::role_handler::delete_permission,
+        mikrotik_service::handlers::role_handler::assign_permission,
+        mikrotik_service::handlers::role_handler::remove_permission,
+        mikrotik_service::handlers::role_handler::get_user_roles,
+        mikrotik_service::handlers::role_handler::assign_role,
+        mikrotik_service::handlers::role_handler::remove_role,
+        mikrotik_service::handlers::audit_handler::list_audit_logs,
+        mikrotik_service::handlers::audit_handler::get_audit_log,
+        mikrotik_service::handlers::metrics_handler::list_interface_metrics,
+        mikrotik_service::handlers::mikrotik_handler::trigger_backup_handler,
+        mikrotik_service::handlers::mikrotik_handler::list_backup_files_handler,
+        mikrotik_service::handlers::mikrotik_handler::download_backup_file_handler,
+        mikrotik_service::handlers::mikrotik_handler::backup_and_send_handler,
+        mikrotik_service::handlers::mikrotik_handler::list_backup_logs_handler,
     ),
     components(
         schemas(
@@ -82,6 +105,7 @@ impl Modify for SecurityAddon {
             mikrotik_service::dto::user::UpdateUserRequest,
             mikrotik_service::dto::user::UserListResponse,
             mikrotik_service::dto::user::UploadPhotoRequest,
+            mikrotik_service::dto::user::ChangePasswordRequest,
             mikrotik_service::errors::app_error::ErrorResponse,
             mikrotik_service::dto::mikrotik::MikrotikClientRequest,
             mikrotik_service::dto::mikrotik::MikrotikClientResponse,
@@ -96,6 +120,31 @@ impl Modify for SecurityAddon {
             mikrotik_service::dto::telegram::UpdateTelegramBotRequest,
             mikrotik_service::dto::telegram::TelegramBotResponse,
             mikrotik_service::dto::telegram::TelegramTestResponse,
+            mikrotik_service::dto::role::RoleResponse,
+            mikrotik_service::dto::role::CreateRoleRequest,
+            mikrotik_service::dto::role::UpdateRoleRequest,
+            mikrotik_service::dto::role::RoleDetailResponse,
+            mikrotik_service::dto::role::PermissionResponse,
+            mikrotik_service::dto::role::CreatePermissionRequest,
+            mikrotik_service::dto::role::UpdatePermissionRequest,
+            mikrotik_service::dto::role::AssignPermissionRequest,
+            mikrotik_service::dto::role::AssignRoleRequest,
+            mikrotik_service::dto::role::UserRoleResponse,
+            mikrotik_service::dto::role::RoleWithPermissions,
+            mikrotik_service::dto::audit::AuditLogResponse,
+            mikrotik_service::dto::audit::AuditLogListResponse,
+            mikrotik_service::dto::audit::AuditLogQuery,
+            mikrotik_service::dto::metrics::InterfaceMetricsQuery,
+            mikrotik_service::dto::metrics::InterfaceMetricsDataPoint,
+            mikrotik_service::dto::metrics::InterfaceMetricsListResponse,
+            mikrotik_service::dto::metrics::MetricsAggregation,
+            mikrotik_service::dto::mikrotik::BackupCreateRequest,
+            mikrotik_service::dto::mikrotik::BackupFileResponse,
+            mikrotik_service::dto::mikrotik::BackupFormat,
+            mikrotik_service::dto::mikrotik::BackupAndSendRequest,
+            mikrotik_service::dto::mikrotik::BackupAndSendResponse,
+            mikrotik_service::dto::mikrotik::BackupLogResponse,
+            mikrotik_service::dto::mikrotik::BackupLogListResponse,
         )
     ),
     modifiers(&SecurityAddon)
@@ -189,18 +238,20 @@ async fn main() {
     // Start MikroTik connection pool cleanup task
     mikrotik_pool.clone().start_cleanup_task(db.clone());
 
+    // Run migrations BEFORE starting background workers
+    // untuk memastikan semua tabel sudah tersedia
+    tracing::info!("Running database migrations...");
+    migration::Migrator::up(&db, None)
+        .await
+        .expect("Failed to run migrations");
+
     let state = AppState::new(db.clone(), redis, rabbit, storage, security, captcha, mikrotik_pool.clone());
     
-    // Start MetricsWorker background task
+    // Start MetricsWorker background task (setelah migrasi selesai)
     let state_metrics = state.clone();
     tokio::spawn(async move {
         mikrotik_service::workers::MetricsWorker::run(state_metrics).await;
     });
-
-    // Run migrations automatically on startup (None type specified to fix inference)
-    migration::Migrator::up(&db, None)
-        .await
-        .expect("Failed to run migrations");
 
     let mut app = routes::create_router(state.clone())
         .route_layer(axum::middleware::from_fn_with_state(

@@ -1,6 +1,18 @@
 use mikrotik_rs::MikrotikDevice;
 use crate::models::mikrotik_clients::Model as MikrotikClient;
 use crate::errors::app_error::AppError;
+use std::sync::OnceLock;
+use std::env;
+
+// Cache AES_KEY agar tidak dibaca dari env setiap request.
+// Mengikuti pola yang sama seperti JWT_SECRET_CACHE di config/auth.rs.
+static AES_KEY_CACHE: OnceLock<String> = OnceLock::new();
+
+pub fn get_aes_key() -> &'static str {
+    AES_KEY_CACHE.get_or_init(|| {
+        env::var("AES_KEY").expect("AES_KEY must be set")
+    })
+}
 
 pub struct MikrotikConnection;
 

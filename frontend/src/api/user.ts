@@ -32,6 +32,11 @@ export interface UpdateUserRequest {
   payment_token?: string
 }
 
+export interface ChangePasswordRequest {
+  current_password: string
+  new_password: string
+}
+
 // ─── Helper ───────────────────────────────────────────────
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -117,4 +122,18 @@ export async function uploadMyPhoto(file: File): Promise<UserProfileResponse> {
     body: formData,
   })
   return handleResponse<UserProfileResponse>(res)
+}
+
+/**
+ * PUT /api/users/me/password
+ * Ganti password user yang sedang login
+ */
+export async function changePassword(data: ChangePasswordRequest): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/users/me/password`, {
+    method: 'PUT',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
+    body: JSON.stringify(data),
+  })
+  return handleResponse<void>(res)
 }

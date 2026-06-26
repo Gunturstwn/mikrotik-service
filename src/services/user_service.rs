@@ -1,4 +1,4 @@
-use crate::dto::user::{UserProfileResponse, UpdateUserRequest, UserListResponse};
+use crate::dto::user::{UserProfileResponse, UpdateUserRequest, UserListResponse, ChangePasswordRequest};
 use crate::models::users::{Entity as User, ActiveModel as UserActiveModel};
 use crate::models::{roles, user_roles};
 use crate::errors::app_error::AppError;
@@ -185,6 +185,35 @@ impl UserService {
         let mut user: UserActiveModel = user_model.into();
         user.deleted_at = Set(Some(Utc::now().naive_utc()));
         user.update(db).await?;
+
+        Ok(())
+    }
+
+    pub async fn change_password(
+        db: &DatabaseConnection,
+        user_id: Uuid,
+        req: ChangePasswordRequest,
+    ) -> Result<(), AppError> {
+        let user = User::find_by_id(user_id)
+            .filter(crate::models::users::Column::DeletedAt.is_null())
+            .one(db)
+            .await?
+            .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+        // Verify current password
+        let is_valid = crate::utils::encryption::verify_password(&req.current_password, &user.password)?;
+        if !is_valid {
+            return Err(AppError::BadRequest("Current password is incorrect".to_string()));
+        }
+
+        // Hash new password
+        let new_hash = crate::utils::encryption::hash_password(&req.new_password)
+            .map_err(|e| AppError::InternalServerError(format!("Failed to hash password: {}", e)))?;
+
+        let mut active: UserActiveModel = user.into();
+        active.password = Set(new_hash);
+        active.updated_at = Set(Utc::now().naive_utc());
+        active.update(db).await?;
 
         Ok(())
     }

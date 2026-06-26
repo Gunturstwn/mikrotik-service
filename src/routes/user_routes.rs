@@ -1,4 +1,4 @@
-use axum::{routing::{get, post}, Router};
+use axum::{routing::{get, post, put}, Router};
 use crate::AppState;
 use crate::handlers::user_handler;
 
@@ -8,6 +8,7 @@ pub fn routes() -> Router<AppState> {
         // Menghindari potensi konflik /me (statis) vs /:id (dinamis) di Axum 0.7
         .route("/", get(user_handler::get_users))
         .route("/me", get(user_handler::get_me).put(user_handler::update_me))
+        .route("/me/password", put(user_handler::change_password))
         .route("/me/photo", post(user_handler::upload_photo))
         .route("/:id", get(user_handler::get_user)
             .put(user_handler::update_user)
